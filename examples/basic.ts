@@ -72,7 +72,8 @@ async function batchDemo() {
   });
 
   // The shape a model emits when it fires several tool calls in one turn.
-  const results = await batchGate.guardAll([
+  // Tools return different shapes, so the batch's result type is `unknown`.
+  const results = await batchGate.guardAll<unknown>([
     { call: { id: "a", name: "search_incidents", args: {} }, execute: () => tools.search_incidents() },
     { call: { id: "b", name: "ack_incident", args: { id: "INC-42" } }, execute: () => tools.ack_incident({ id: "INC-42" }) },
     { call: { id: "c", name: "delete_service", args: { name: "canary" } }, execute: () => tools.delete_service({ name: "canary" }) },

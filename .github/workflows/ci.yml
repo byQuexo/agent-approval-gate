@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  node:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,3 +16,16 @@ jobs:
       - run: npm install
       - run: npm run build
       - run: npm test
+
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/rig-adapter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo test --features "rig yaml"
+      - run: cargo clippy --features "rig yaml" -- -D warnings

@@ -120,6 +120,7 @@ test("protect() wraps a plain tool function", async () => {
 
 test("guardAll: reads run, writes gated per-call, results keep input order", async () => {
   const gate = createGate({
+    approver: allow, // required; batchApprover handles the batch path
     batchApprover: async (reqs) => {
       // Approve the ack, deny the delete. Each judged on its own.
       const out: Record<string, { approved: boolean; reason?: string }> = {};
