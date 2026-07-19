@@ -1,0 +1,42 @@
+# agent-approval-gate policy
+# Edit this file to change what needs human approval — no code changes required.
+version: 1
+
+defaults:
+  # Tools not matched below fall back to the built-in verb heuristic.
+  # Set to "write" to gate every unknown tool instead (safest), or "read".
+  unlisted: heuristic
+
+tools:
+  # Reads run silently.
+  search_incidents:
+    sensitivity: read
+  get_service:
+    sensitivity: read
+
+  # Writes wait for approval.
+  ack_incident:
+    sensitivity: write
+    label: Acknowledge incident
+
+  create_incident:
+    sensitivity: write
+    label: Create incident
+
+  # Destructive calls are always gated, even if the gate predicate is loosened.
+  delete_service:
+    sensitivity: write
+    destructive: true
+    label: Delete service
+
+patterns:
+  # Anything that looks like a delete/drop/purge is destructive.
+  - match: "delete_*"
+    sensitivity: write
+    destructive: true
+  - match: "drop_*"
+    sensitivity: write
+    destructive: true
+  # Group-level rule: all incident mutations are writes.
+  - match: "*_incident"
+    sensitivity: write

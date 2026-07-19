@@ -5,6 +5,16 @@ export {
   defaultGate,
   staticClassifier,
 } from "./policy.js";
+export {
+  classifierFromConfig,
+  validatePolicy,
+  PolicyConfigError,
+} from "./policy-config.js";
+export type {
+  PolicyConfig,
+  PolicyRule,
+  PolicyPattern,
+} from "./policy-config.js";
 export type {
   ApprovalDecision,
   ApprovalRequest,
