@@ -52,8 +52,9 @@ const DESTRUCTIVE_VERBS = [
 /** Split a tool name into its leading verb token. `create_alert` -> `create`. */
 function leadingVerb(name: string): string {
   const token = name.split(/[_\-.:/\s]+/)[0] ?? name;
-  // camelCase: createAlert -> create
-  const camel = token.match(/^[a-z]+/i)?.[0] ?? token;
+  // camelCase: deleteUser -> delete. No `i` flag, so it stops at the first
+  // uppercase letter (with the flag it would swallow the whole word).
+  const camel = token.match(/^[a-z]+/)?.[0] ?? token;
   return camel.toLowerCase();
 }
 

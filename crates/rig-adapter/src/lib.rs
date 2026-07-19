@@ -132,12 +132,20 @@ pub fn default_classify(call: &ToolCall) -> Classification {
         "wipe",
     ];
 
-    let verb = call
+    // First token (split on non-letters), then its leading lowercase run so
+    // camelCase resolves too: `deleteUser` -> `delete`. Falls back to the whole
+    // token lowercased when it doesn't start lowercase.
+    let token = call
         .name
         .split(|c: char| !c.is_ascii_alphabetic())
         .next()
-        .unwrap_or(&call.name)
-        .to_ascii_lowercase();
+        .unwrap_or(&call.name);
+    let lead: String = token.chars().take_while(|c| c.is_ascii_lowercase()).collect();
+    let verb = if lead.is_empty() {
+        token.to_ascii_lowercase()
+    } else {
+        lead
+    };
 
     let destructive = DESTRUCTIVE.contains(&verb.as_str());
     let is_write = destructive || WRITE.contains(&verb.as_str());
@@ -564,6 +572,15 @@ mod tests {
             .await;
         assert!(res.is_err());
         assert!(!ran);
+    }
+
+    #[test]
+    fn default_classify_handles_snake_and_camel_case() {
+        assert_eq!(default_classify(&call("get_status")).sensitivity, Sensitivity::Read);
+        assert_eq!(default_classify(&call("create_alert")).sensitivity, Sensitivity::Write);
+        // camelCase: leading verb must resolve to `delete`, not `deleteuser`.
+        assert!(default_classify(&call("deleteUser")).destructive);
+        assert_eq!(default_classify(&call("listAlerts")).sensitivity, Sensitivity::Read);
     }
 
     /// Approves everything except destructive calls — a realistic batch policy.

@@ -38,7 +38,11 @@ export class ApprovalGate {
     this.#classify = options.classify ?? defaultClassifier;
     this.#approver = options.approver;
     this.#batchApprover = options.batchApprover;
-    this.#shouldGate = options.gate ?? ((c) => defaultGate(c));
+    // Destructive calls are ALWAYS gated — a custom `gate` predicate can only
+    // widen what's held, never let a destructive call through.
+    const predicate: (c: Classification, call: ToolCall) => boolean =
+      options.gate ?? ((c) => defaultGate(c));
+    this.#shouldGate = (c, call) => c.destructive === true || predicate(c, call);
     this.#describe = options.describe;
     this.#onDecision = options.onDecision;
   }
