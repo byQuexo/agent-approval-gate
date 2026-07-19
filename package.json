@@ -32,6 +32,18 @@
       "types": "./dist/adapters/mcp.d.ts",
       "import": "./dist/adapters/mcp.js"
     },
+    "./openai": {
+      "types": "./dist/adapters/openai.d.ts",
+      "import": "./dist/adapters/openai.js"
+    },
+    "./anthropic": {
+      "types": "./dist/adapters/anthropic.d.ts",
+      "import": "./dist/adapters/anthropic.js"
+    },
+    "./gemini": {
+      "types": "./dist/adapters/gemini.d.ts",
+      "import": "./dist/adapters/gemini.js"
+    },
     "./yaml": {
       "types": "./dist/yaml.d.ts",
       "import": "./dist/yaml.js"
