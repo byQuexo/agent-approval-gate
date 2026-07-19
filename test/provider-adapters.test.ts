@@ -4,6 +4,7 @@ import { createGate, staticClassifier } from "../src/index.js";
 import { guardAnthropicToolUses } from "../src/adapters/anthropic.js";
 import { guardOpenAIToolCalls } from "../src/adapters/openai.js";
 import { guardGeminiFunctionCalls } from "../src/adapters/gemini.js";
+import { guardBedrockToolUses } from "../src/adapters/bedrock.js";
 
 // Shared policy: search is a read, delete_service is a destructive write.
 const classify = staticClassifier({
@@ -112,4 +113,46 @@ test("gemini: object tool values pass through unwrapped", async () => {
     runTool: () => ({ hits: 3, top: "x" }),
   });
   assert.deepEqual(results[0]?.functionResponse.response, { hits: 3, top: "x" });
+});
+
+// ---------------------------------------------------------------------------
+// AWS Bedrock (Converse API)
+// ---------------------------------------------------------------------------
+
+test("bedrock: gates toolUse blocks, returns toolResult blocks in order", async () => {
+  const ran: string[] = [];
+  const response = {
+    output: {
+      message: {
+        content: [
+          { text: "on it" },
+          { toolUse: { toolUseId: "a", name: "search", input: {} } },
+          { toolUse: { toolUseId: "b", name: "delete_service", input: { n: 1 } } },
+        ],
+      },
+    },
+  };
+  const results = await guardBedrockToolUses(response, denyDestructive, {
+    runTool: (name) => (ran.push(name), runTool(name)),
+  });
+
+  assert.deepEqual(results[0], {
+    toolResult: { toolUseId: "a", content: [{ text: "ran search" }], status: "success" },
+  });
+  assert.equal(results[1]?.toolResult.toolUseId, "b");
+  assert.equal(results[1]?.toolResult.status, "error");
+  assert.match(String((results[1]?.toolResult.content[0] as { text: string }).text), /denied|blocked/i);
+  assert.deepEqual(ran, ["search"], "denied tool must not run");
+});
+
+test("bedrock: object tool values become a json content block", async () => {
+  const response = {
+    output: { message: { content: [{ toolUse: { toolUseId: "a", name: "search", input: {} } }] } },
+  };
+  const results = await guardBedrockToolUses(
+    response,
+    createGate({ classify, approver: async () => ({ approved: true }) }),
+    { runTool: () => ({ hits: 3 }) },
+  );
+  assert.deepEqual(results[0]?.toolResult.content, [{ json: { hits: 3 } }]);
 });

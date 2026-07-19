@@ -44,6 +44,10 @@
       "types": "./dist/adapters/gemini.d.ts",
       "import": "./dist/adapters/gemini.js"
     },
+    "./bedrock": {
+      "types": "./dist/adapters/bedrock.d.ts",
+      "import": "./dist/adapters/bedrock.js"
+    },
     "./yaml": {
       "types": "./dist/yaml.d.ts",
       "import": "./dist/yaml.js"

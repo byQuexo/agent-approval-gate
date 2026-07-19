@@ -178,12 +178,12 @@ sees the refusal as the tool output and can react. Pass `{ rethrow: true }` to
 throw `ApprovalDeniedError` instead, or `{ onDenied }` to shape the result. The
 wrapper is structurally typed — no dependency on `@modelcontextprotocol/sdk`.
 
-## Provider adapters (OpenAI · Anthropic · Gemini)
+## Provider adapters (OpenAI · Anthropic · Gemini · Bedrock)
 
 Calling a provider SDK directly? These adapters do the tool-call ↔ result
 translation for you — gate the model's tool calls and get back results already
 in that provider's expected shape. All structurally typed: **no dependency on
-`openai`, `@anthropic-ai/sdk`, or `@google/genai`.**
+`openai`, `@anthropic-ai/sdk`, `@google/genai`, or `@aws-sdk/*`.**
 
 **Anthropic** — returns `tool_result` blocks; send them as one user turn:
 
@@ -218,10 +218,27 @@ calls come back as an error result the model can react to (an `is_error`
 tool_result for Anthropic, the denial text as content for OpenAI, `{ error }`
 for Gemini). Parallel tool calls are handled — results come back in input order.
 
+**AWS Bedrock (Converse API)** — returns `toolResult` blocks; works for any
+Bedrock model with tool use (Claude, Nova, Llama, …):
+
+```ts
+import { guardBedrockToolUses } from "agent-approval-gate/bedrock";
+
+const results = await guardBedrockToolUses(converseResponse, gate, { runTool });
+messages.push({ role: "user", content: results });
+```
+
+Fulfilled calls come back `status: "success"` (string → `{ text }`, object →
+`{ json }`); denied calls come back `status: "error"` with the denial message.
+
 > **OpenAI Responses API:** the adapter targets Chat Completions
 > (`message.tool_calls`). For the Responses API (`function_call` output items),
 > map `call_id`/`name`/`arguments` onto `guardAll` directly — see the manual
 > snippet under [Parallel tool calls](#parallel-tool-calls-batching).
+>
+> **Bedrock via the Messages-API Mantle client** (`AnthropicBedrockMantle`)
+> returns native `tool_use` blocks — use `agent-approval-gate/anthropic` there,
+> not the Bedrock adapter (which is for the Converse API).
 
 ## How classification works
 
@@ -298,7 +315,7 @@ peer dependency. Install it if you use YAML: `npm install yaml`.
 | `classifierFromConfig(config)` | Build a classifier from a `PolicyConfig` object (pure, zero-dep). |
 | `loadPolicyFile(path)` / `classifierFromYaml(text)` / `parsePolicy(text)` | YAML loaders — from `agent-approval-gate/yaml`. |
 | `withApprovalGate(tools, gate)` / `withApprovalGate(client, gate, opts?)` | Adapters — from `agent-approval-gate/ai-sdk` (tool set) and `agent-approval-gate/mcp` (MCP client). |
-| `guardAnthropicToolUses` / `guardOpenAIToolCalls` / `guardGeminiFunctionCalls` | Provider adapters — from `agent-approval-gate/anthropic`, `/openai`, `/gemini`. |
+| `guardAnthropicToolUses` / `guardOpenAIToolCalls` / `guardGeminiFunctionCalls` / `guardBedrockToolUses` | Provider adapters — from `agent-approval-gate/anthropic`, `/openai`, `/gemini`, `/bedrock`. |
 | `validatePolicy(obj)` | Assert a config is well-formed; throws `PolicyConfigError`. |
 | `defaultClassifier` / `defaultGate` | The built-in heuristics. |
 | `ApprovalDeniedError` | Thrown when an approver denies a call. |
@@ -343,7 +360,7 @@ cd crates/rig-adapter && cargo test --features rig   # requires Rust 1.85+
 
 - [x] YAML-driven policies (`agent-approval-gate/yaml`)
 - [x] MCP middleware adapter (`agent-approval-gate/mcp`) — gate calls at the protocol layer
-- [x] Provider adapters — OpenAI, Anthropic, Gemini (`agent-approval-gate/{openai,anthropic,gemini}`)
+- [x] Provider adapters — OpenAI, Anthropic, Gemini, AWS Bedrock (`agent-approval-gate/{openai,anthropic,gemini,bedrock}`)
 - [ ] LangChain / LangGraph adapter
 - [x] Rust core + Rig `Tool` adapter (`crates/rig-adapter`, `--features rig`)
 - [ ] Rust: load the same YAML policy format (serde)
