@@ -15,6 +15,13 @@ export type {
   PolicyRule,
   PolicyPattern,
 } from "./policy-config.js";
+export {
+  presets,
+  financePolicy,
+  infraPolicy,
+  commsPolicy,
+  mergePolicies,
+} from "./presets.js";
 export type {
   ApprovalDecision,
   ApprovalRequest,

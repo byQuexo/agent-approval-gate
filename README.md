@@ -298,6 +298,32 @@ import { classifierFromConfig } from "agent-approval-gate";
 const classify = classifierFromConfig({ tools: { /* … */ } });
 ```
 
+### Presets
+
+Don't want to write the policy from scratch? Ship-ready presets for common
+domains — **finance**, **infra**, **comms** — layer onto your own tool map with
+`mergePolicies`:
+
+```ts
+import { createGate, classifierFromConfig, presets, mergePolicies } from "agent-approval-gate";
+
+const gate = createGate({
+  classify: classifierFromConfig(
+    mergePolicies(presets.infra, presets.comms, {
+      tools: { get_status: { sensitivity: "read" } }, // your own tools
+      defaults: { unlisted: "write" },                // gate anything unknown
+    }),
+  ),
+  approver,
+});
+```
+
+Each preset is glob-based (e.g. `delete_*` and `run_command` → destructive,
+`deploy_*` → write) so it works against your real tool names. They're a
+sensible **starting point, not a security guarantee** — review before relying on
+them. The same presets ship as YAML in [`presets/`](presets/) for the Rust
+loader (and any non-JS consumer).
+
 The `agent-approval-gate/yaml` entry point (`parsePolicy`, `classifierFromYaml`,
 `loadPolicyFile`) is the *only* part of the package with a runtime dependency —
 the [`yaml`](https://www.npmjs.com/package/yaml) package, declared as an optional
@@ -356,6 +382,18 @@ let agent = client
 cd crates/rig-adapter && cargo test --features rig   # requires Rust 1.85+
 ```
 
+The crate also loads the **same YAML policy format** (behind `--features yaml`),
+so a `policy.yml` — including the shipped [`presets/`](presets/) — works
+identically in Rust and TypeScript:
+
+```rust
+use std::sync::Arc;
+use agent_approval_gate::{ApprovalGate, policy::classifier_from_yaml};
+
+let classify = classifier_from_yaml(&std::fs::read_to_string("presets/infra.yml")?)?;
+let gate = Arc::new(ApprovalGate::with_classifier(my_approver, classify));
+```
+
 ## Roadmap
 
 - [x] YAML-driven policies (`agent-approval-gate/yaml`)
@@ -363,8 +401,8 @@ cd crates/rig-adapter && cargo test --features rig   # requires Rust 1.85+
 - [x] Provider adapters — OpenAI, Anthropic, Gemini, AWS Bedrock (`agent-approval-gate/{openai,anthropic,gemini,bedrock}`)
 - [ ] LangChain / LangGraph adapter
 - [x] Rust core + Rig `Tool` adapter (`crates/rig-adapter`, `--features rig`)
-- [ ] Rust: load the same YAML policy format (serde)
-- [ ] Policy presets (finance, infra, comms)
+- [x] Rust: load the same YAML policy format (`crates/rig-adapter`, `--features yaml`)
+- [x] Policy presets — finance, infra, comms (`presets`, `mergePolicies`, + `presets/*.yml`)
 
 ## License
 

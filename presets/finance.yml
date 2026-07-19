@@ -1,0 +1,16 @@
+# agent-approval-gate — finance preset
+# Money movement and trading are writes; irreversible ones are destructive.
+# Mirrors `financePolicy` from `agent-approval-gate` (TS). Tighten for your tools.
+version: 1
+patterns:
+  - { match: "transfer*", sensitivity: write, destructive: true }
+  - { match: "*payment*", sensitivity: write, destructive: true }
+  - { match: "pay_*", sensitivity: write, destructive: true }
+  - { match: "charge_*", sensitivity: write, destructive: true }
+  - { match: "refund_*", sensitivity: write, destructive: true }
+  - { match: "withdraw*", sensitivity: write, destructive: true }
+  - { match: "deposit*", sensitivity: write }
+  - { match: "*_order", sensitivity: write, destructive: true }
+  - { match: "execute_trade", sensitivity: write, destructive: true }
+  - { match: "buy_*", sensitivity: write, destructive: true }
+  - { match: "sell_*", sensitivity: write, destructive: true }

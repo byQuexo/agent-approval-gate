@@ -1,0 +1,19 @@
+# agent-approval-gate — infra preset
+# Provisioning is a write; teardown and arbitrary exec are destructive.
+# Mirrors `infraPolicy` from `agent-approval-gate` (TS). Tighten for your tools.
+version: 1
+patterns:
+  - { match: "delete_*", sensitivity: write, destructive: true }
+  - { match: "destroy_*", sensitivity: write, destructive: true }
+  - { match: "terminate_*", sensitivity: write, destructive: true }
+  - { match: "drop_*", sensitivity: write, destructive: true }
+  - { match: "purge_*", sensitivity: write, destructive: true }
+  - { match: "run_command", sensitivity: write, destructive: true }
+  - { match: "exec_*", sensitivity: write, destructive: true }
+  - { match: "deploy_*", sensitivity: write }
+  - { match: "rollback_*", sensitivity: write }
+  - { match: "restart_*", sensitivity: write }
+  - { match: "reboot_*", sensitivity: write }
+  - { match: "stop_*", sensitivity: write }
+  - { match: "scale_*", sensitivity: write }
+  - { match: "apply_*", sensitivity: write }

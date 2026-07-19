@@ -1,0 +1,15 @@
+# agent-approval-gate — comms preset
+# Sending is a write; anything broadcast/published is destructive (wide reach).
+# Mirrors `commsPolicy` from `agent-approval-gate` (TS). Tighten for your tools.
+version: 1
+patterns:
+  - { match: "publish_*", sensitivity: write, destructive: true }
+  - { match: "broadcast_*", sensitivity: write, destructive: true }
+  - { match: "tweet*", sensitivity: write, destructive: true }
+  - { match: "send_*", sensitivity: write }
+  - { match: "reply_*", sensitivity: write }
+  - { match: "post_*", sensitivity: write }
+  - { match: "email_*", sensitivity: write }
+  - { match: "dm_*", sensitivity: write }
+  - { match: "message_*", sensitivity: write }
+  - { match: "notify_*", sensitivity: write }

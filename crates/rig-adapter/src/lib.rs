@@ -11,6 +11,8 @@ use async_trait::async_trait;
 
 /// How risky a tool call is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "yaml", derive(serde::Deserialize))]
+#[cfg_attr(feature = "yaml", serde(rename_all = "lowercase"))]
 pub enum Sensitivity {
     Read,
     Write,
@@ -605,6 +607,211 @@ mod tests {
                 BatchResult::Fulfilled { call, .. } => &call.name,
                 BatchResult::Denied { call, .. } => &call.name,
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// YAML policy loader (feature = "yaml")
+// ---------------------------------------------------------------------------
+
+/// Load a declarative classification policy from YAML — the same format as the
+/// TypeScript package and the shipped `presets/*.yml` files.
+///
+/// ```ignore
+/// use std::sync::Arc;
+/// use agent_approval_gate::{ApprovalGate, policy::classifier_from_yaml};
+///
+/// let classify = classifier_from_yaml(&std::fs::read_to_string("policy.yml")?)?;
+/// let gate = Arc::new(ApprovalGate::with_classifier(my_approver, classify));
+/// ```
+#[cfg(feature = "yaml")]
+pub mod policy {
+    use super::{default_classify, Classification, Sensitivity, ToolCall};
+    use serde::Deserialize;
+    use std::collections::HashMap;
+
+    /// How to classify a tool matching neither `tools` nor `patterns`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum Unlisted {
+        /// Fall back to the built-in verb heuristic ([`default_classify`]).
+        #[default]
+        Heuristic,
+        /// Treat as a read (never gated).
+        Read,
+        /// Treat as a write (gated).
+        Write,
+    }
+
+    #[derive(Debug, Clone, Default, Deserialize)]
+    pub struct Defaults {
+        #[serde(default)]
+        pub unlisted: Unlisted,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct PolicyRule {
+        #[serde(default)]
+        pub sensitivity: Option<Sensitivity>,
+        #[serde(default)]
+        pub destructive: bool,
+        #[serde(default)]
+        pub label: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct PolicyPattern {
+        #[serde(rename = "match")]
+        pub pattern: String,
+        #[serde(default)]
+        pub sensitivity: Option<Sensitivity>,
+        #[serde(default)]
+        pub destructive: bool,
+        #[serde(default)]
+        pub label: Option<String>,
+    }
+
+    /// A parsed policy document.
+    #[derive(Debug, Clone, Default, Deserialize)]
+    pub struct PolicyConfig {
+        #[serde(default)]
+        pub version: Option<u32>,
+        #[serde(default)]
+        pub defaults: Defaults,
+        #[serde(default)]
+        pub tools: HashMap<String, PolicyRule>,
+        #[serde(default)]
+        pub patterns: Vec<PolicyPattern>,
+    }
+
+    fn to_classification(
+        sensitivity: Option<Sensitivity>,
+        destructive: bool,
+        label: Option<String>,
+    ) -> Classification {
+        Classification {
+            // Omitted sensitivity is fail-safe: treat as a gated write.
+            sensitivity: sensitivity.unwrap_or(Sensitivity::Write),
+            destructive,
+            label,
+        }
+    }
+
+    /// Match a glob (`*` = any run, `?` = one char) against a tool name.
+    fn glob_match(pattern: &str, text: &str) -> bool {
+        let p: Vec<char> = pattern.chars().collect();
+        let t: Vec<char> = text.chars().collect();
+        let (mut pi, mut ti) = (0usize, 0usize);
+        let (mut star, mut mark) = (None, 0usize);
+        while ti < t.len() {
+            if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+                pi += 1;
+                ti += 1;
+            } else if pi < p.len() && p[pi] == '*' {
+                star = Some(pi);
+                mark = ti;
+                pi += 1;
+            } else if let Some(s) = star {
+                pi = s + 1;
+                mark += 1;
+                ti = mark;
+            } else {
+                return false;
+            }
+        }
+        while pi < p.len() && p[pi] == '*' {
+            pi += 1;
+        }
+        pi == p.len()
+    }
+
+    /// Build a classifier from a parsed [`PolicyConfig`]. Resolution order per
+    /// call: exact tool match → first matching pattern → the `unlisted` default.
+    pub fn classifier_from_config(
+        config: PolicyConfig,
+    ) -> impl Fn(&ToolCall) -> Classification + Send + Sync + 'static {
+        let PolicyConfig {
+            tools,
+            patterns,
+            defaults,
+            ..
+        } = config;
+        let unlisted = defaults.unlisted;
+
+        move |call: &ToolCall| {
+            if let Some(rule) = tools.get(&call.name) {
+                return to_classification(rule.sensitivity, rule.destructive, rule.label.clone());
+            }
+            for p in &patterns {
+                if glob_match(&p.pattern, &call.name) {
+                    return to_classification(p.sensitivity, p.destructive, p.label.clone());
+                }
+            }
+            match unlisted {
+                Unlisted::Read => Classification {
+                    sensitivity: Sensitivity::Read,
+                    destructive: false,
+                    label: None,
+                },
+                Unlisted::Write => Classification {
+                    sensitivity: Sensitivity::Write,
+                    destructive: false,
+                    label: None,
+                },
+                Unlisted::Heuristic => default_classify(call),
+            }
+        }
+    }
+
+    /// Parse a YAML policy string and build a classifier in one step.
+    pub fn classifier_from_yaml(
+        yaml: &str,
+    ) -> Result<impl Fn(&ToolCall) -> Classification + Send + Sync + 'static, serde_yaml::Error>
+    {
+        let config: PolicyConfig = serde_yaml::from_str(yaml)?;
+        Ok(classifier_from_config(config))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::classifier_from_yaml;
+        use crate::{Sensitivity, ToolCall};
+
+        fn call(name: &str) -> ToolCall {
+            ToolCall {
+                id: name.into(),
+                name: name.into(),
+                args: serde_json::Value::Null,
+            }
+        }
+
+        #[test]
+        fn loads_and_classifies() {
+            let yaml = r#"
+version: 1
+defaults:
+  unlisted: write
+tools:
+  search_incidents: { sensitivity: read }
+  delete_service: { sensitivity: write, destructive: true }
+patterns:
+  - { match: "*_incident", sensitivity: write }
+"#;
+            let classify = classifier_from_yaml(yaml).unwrap();
+            assert_eq!(classify(&call("search_incidents")).sensitivity, Sensitivity::Read);
+            assert!(classify(&call("delete_service")).destructive);
+            assert_eq!(classify(&call("ack_incident")).sensitivity, Sensitivity::Write);
+            assert_eq!(classify(&call("unknown_tool")).sensitivity, Sensitivity::Write);
+        }
+
+        #[test]
+        fn loads_the_shipped_infra_preset() {
+            let yaml = include_str!("../../../presets/infra.yml");
+            let classify = classifier_from_yaml(yaml).unwrap();
+            assert!(classify(&call("delete_cluster")).destructive);
+            assert_eq!(classify(&call("deploy_service")).sensitivity, Sensitivity::Write);
+            assert!(!classify(&call("deploy_service")).destructive);
         }
     }
 }

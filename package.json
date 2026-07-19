@@ -60,7 +60,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "presets"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
