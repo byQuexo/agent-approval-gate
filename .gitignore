@@ -10,3 +10,6 @@ dist-test/
 # Rust
 /crates/**/target/
 target/
+
+# npm pack output
+*.tgz
