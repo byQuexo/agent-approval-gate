@@ -1,11 +1,16 @@
 import { ApprovalDeniedError } from "./errors.js";
 import { defaultClassifier, defaultGate } from "./policy.js";
 import type {
+  ApprovalDecision,
   ApprovalRequest,
   Approver,
+  BatchApprover,
+  BatchResult,
+  Classification,
   Classifier,
   Describe,
   GateOptions,
+  GuardedCall,
   ToolCall,
 } from "./types.js";
 
@@ -24,6 +29,7 @@ import type {
 export class ApprovalGate {
   readonly #classify: Classifier;
   readonly #approver: Approver;
+  readonly #batchApprover: BatchApprover | undefined;
   readonly #shouldGate: (c: ReturnType<Classifier>, call: ToolCall) => boolean;
   readonly #describe: Describe | undefined;
   readonly #onDecision: GateOptions["onDecision"];
@@ -31,9 +37,25 @@ export class ApprovalGate {
   constructor(options: GateOptions) {
     this.#classify = options.classify ?? defaultClassifier;
     this.#approver = options.approver;
+    this.#batchApprover = options.batchApprover;
     this.#shouldGate = options.gate ?? ((c) => defaultGate(c));
     this.#describe = options.describe;
     this.#onDecision = options.onDecision;
+  }
+
+  /** Build the ApprovalRequest for a gated call (runs `describe` if present). */
+  async #toRequest(
+    call: ToolCall,
+    classification: Classification,
+  ): Promise<ApprovalRequest> {
+    const reason = this.#describe
+      ? await this.#describe(call, classification)
+      : undefined;
+    return {
+      call,
+      classification,
+      ...(reason !== undefined ? { reason } : {}),
+    };
   }
 
   /**
@@ -48,15 +70,7 @@ export class ApprovalGate {
       return await execute();
     }
 
-    const reason = this.#describe
-      ? await this.#describe(call, classification)
-      : undefined;
-
-    const request: ApprovalRequest = {
-      call,
-      classification,
-      ...(reason !== undefined ? { reason } : {}),
-    };
+    const request = await this.#toRequest(call, classification);
 
     // One approver call per gated tool call. No caching, ever.
     const decision = await this.#approver(request);
@@ -67,6 +81,90 @@ export class ApprovalGate {
     }
 
     return await execute();
+  }
+
+  /**
+   * Guard a **batch** of tool calls — the shape a model produces when it emits
+   * parallel tool calls in one turn.
+   *
+   * Reads run immediately. Every gated call in the batch is collected and shown
+   * to the {@link GateOptions.batchApprover} at once (or, if none is set, sent
+   * one at a time to the single approver). Approved and ungated calls then
+   * execute **concurrently**; denied calls never run.
+   *
+   * Unlike {@link guard}, this never throws for a denial: each call gets its own
+   * {@link BatchResult} (`fulfilled` | `denied` | `rejected`), returned in the
+   * **same order** as the input so you can map results straight back onto the
+   * model's tool calls. Approving one call in a batch says nothing about the
+   * others — every gated call needs its own yes.
+   *
+   * Note: call ids must be unique within a batch (provider tool-call ids are).
+   */
+  async guardAll<T>(calls: readonly GuardedCall<T>[]): Promise<BatchResult<T>[]> {
+    const entries = calls.map((c) => ({
+      call: c.call,
+      execute: c.execute,
+      classification: this.#classify(c.call),
+      gated: false,
+    }));
+    for (const e of entries) e.gated = this.#shouldGate(e.classification, e.call);
+
+    // Build one ApprovalRequest per gated call.
+    const requests: ApprovalRequest[] = [];
+    for (const e of entries) {
+      if (e.gated) requests.push(await this.#toRequest(e.call, e.classification));
+    }
+    const requestById = new Map(requests.map((r) => [r.call.id, r]));
+
+    // Collect a decision for every gated call. Fail-closed on anything missing.
+    const decisions = new Map<string, ApprovalDecision>();
+    const batchApprover = this.#batchApprover;
+    if (requests.length > 0) {
+      if (batchApprover) {
+        const verdicts = await batchApprover(requests);
+        for (const r of requests) {
+          const d: ApprovalDecision =
+            verdicts[r.call.id] ??
+            { approved: false, reason: "no decision returned for this call" };
+          decisions.set(r.call.id, d);
+          this.#onDecision?.(r, d);
+        }
+      } else {
+        // No batch approver: fall back to the single approver, one call at a
+        // time (sequential, so CLI prompts don't interleave).
+        for (const r of requests) {
+          const d = await this.#approver(r);
+          decisions.set(r.call.id, d);
+          this.#onDecision?.(r, d);
+        }
+      }
+    }
+
+    // Execute in original order, concurrently.
+    return Promise.all(
+      entries.map(async (e): Promise<BatchResult<T>> => {
+        if (e.gated) {
+          const d = decisions.get(e.call.id);
+          if (!d || !d.approved) {
+            const request = requestById.get(e.call.id) ?? {
+              call: e.call,
+              classification: e.classification,
+            };
+            const reason = d && !d.approved ? d.reason : undefined;
+            return {
+              call: e.call,
+              status: "denied",
+              error: new ApprovalDeniedError(request, reason),
+            };
+          }
+        }
+        try {
+          return { call: e.call, status: "fulfilled", value: await e.execute() };
+        } catch (error) {
+          return { call: e.call, status: "rejected", error };
+        }
+      }),
+    );
   }
 
   /**

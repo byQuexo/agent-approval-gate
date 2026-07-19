@@ -102,6 +102,54 @@ await generateText({
 // searchIncidents runs silently · ackIncident & deleteService each wait for approval
 ```
 
+## Parallel tool calls (batching)
+
+Modern models emit **several tool calls in one turn**. Gating each one with a
+separate prompt is wrong twice over: the human gets interleaved pop-ups, and —
+worse — a single "yes" can feel like it covered the whole batch. `guardAll`
+shows every pending write together and takes **one decision per call**, then
+runs the approved (and read-only) calls concurrently:
+
+```ts
+const gate = createGate({
+  batchApprover: async (requests) => {
+    // `requests` holds only the *gated* calls. Show them together, decide each.
+    const verdicts = await ui.reviewBatch(requests); // your UI / CLI
+    return Object.fromEntries(
+      requests.map((r) => [r.call.id, verdicts[r.call.id] ?? { approved: false }]),
+    );
+  },
+});
+
+const results = await gate.guardAll([
+  { call: { id: "a", name: "search_incidents", args: {} },              execute: () => search() },
+  { call: { id: "b", name: "ack_incident",     args: { id: "INC-1" } }, execute: () => ack("INC-1") },
+  { call: { id: "c", name: "delete_service",   args: { name: "old" } }, execute: () => del("old") },
+]);
+
+// results keep input order, so they map 1:1 back onto the model's tool calls:
+for (const r of results) {
+  if (r.status === "fulfilled") sendToolResult(r.call.id, r.value);
+  else if (r.status === "denied") sendToolResult(r.call.id, r.error.message); // agent reacts
+  else sendToolResult(r.call.id, `error: ${r.error}`);
+}
+```
+
+- **Never throws.** Each call reports `fulfilled` | `denied` | `rejected`, so one
+  denied call can't sink the rest of the batch — exactly what you need when every
+  tool call must return a result to the model.
+- **Fail-closed.** A call the approver omits from its verdict map is treated as
+  denied.
+- **Per-call consent.** Approving one call in a batch grants nothing to the
+  others, and (as always) nothing carries into the next turn.
+- **No batch approver?** `guardAll` falls back to your single `approver`, one
+  gated call at a time — so it works either way.
+
+> **AI SDK note:** the SDK invokes each tool's `execute` separately, so
+> `withApprovalGate` gates parallel calls independently (fine for auto-approve
+> or web UIs). For a single *batched* approval prompt, drive tools through
+> `guardAll` in your own loop or an MCP middleware.
+
 ## How classification works
 
 - **`staticClassifier(map)`** — the production path. Declare each tool's
@@ -121,12 +169,13 @@ with `gate: (classification, call) => boolean` — but destructive calls are
 | --- | --- |
 | `createGate(options)` / `new ApprovalGate(options)` | Build a gate. |
 | `gate.guard(call, execute)` | Run `execute`, requesting approval first if gated. Throws `ApprovalDeniedError` on denial. |
+| `gate.guardAll(calls)` | Guard a **batch** of parallel calls; returns one `BatchResult` per call, in order. Never throws. |
 | `gate.protect(name, fn, idFor?)` | Turn a plain `(args) => result` tool into a guarded one. |
 | `staticClassifier(map, fallback?)` | Per-tool classification map. |
 | `defaultClassifier` / `defaultGate` | The built-in heuristics. |
 | `ApprovalDeniedError` | Thrown when an approver denies a call. |
 
-`options`: `{ approver, classify?, gate?, describe?, onDecision? }`.
+`options`: `{ approver, batchApprover?, classify?, gate?, describe?, onDecision? }`.
 `describe` generates the human-readable reason shown to the approver (wire it to
 an LLM one-liner if you like). `onDecision` fires after every verdict — point it
 at your audit log.

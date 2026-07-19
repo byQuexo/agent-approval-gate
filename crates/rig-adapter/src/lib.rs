@@ -53,6 +53,40 @@ pub enum Decision {
 #[async_trait]
 pub trait Approver: Send + Sync {
     async fn review(&self, request: &ApprovalRequest) -> Decision;
+
+    /// Review a whole batch of gated calls at once — the shape a model produces
+    /// with parallel tool calling. Returns one decision per request, in order.
+    ///
+    /// Default impl reviews each call individually, so existing approvers get
+    /// batch support for free; override to show all pending writes together.
+    async fn review_batch(&self, requests: &[ApprovalRequest]) -> Vec<Decision> {
+        let mut out = Vec::with_capacity(requests.len());
+        for r in requests {
+            out.push(self.review(r).await);
+        }
+        out
+    }
+}
+
+/// Per-call outcome from [`ApprovalGate::guard_all`].
+#[derive(Debug)]
+pub enum BatchResult<T> {
+    Fulfilled { call: ToolCall, value: T },
+    Denied { call: ToolCall, error: ApprovalDenied },
+}
+
+/// A boxed, heterogeneous tool executor for [`ApprovalGate::guard_all`], so a
+/// batch can mix tools with different bodies.
+pub type BoxExecutor<T> = Box<
+    dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send,
+>;
+
+/// Wrap an async tool body into a [`BoxExecutor`].
+pub fn executor<T, Fut>(f: impl FnOnce() -> Fut + Send + 'static) -> BoxExecutor<T>
+where
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    Box::new(move || Box::pin(f()))
 }
 
 /// Classifies a tool call. Provide your own, or use [`default_classify`].
@@ -178,6 +212,93 @@ impl<A: Approver> ApprovalGate<A> {
             }),
         }
     }
+
+    /// Guard a batch of tool calls (parallel tool calling). Reads pass through;
+    /// gated calls are reviewed together via [`Approver::review_batch`]. Returns
+    /// one [`BatchResult`] per input call, in the same order — approved and
+    /// ungated calls run, denied ones don't. Approving one call in a batch says
+    /// nothing about the others.
+    pub async fn guard_all<T>(
+        &self,
+        calls: Vec<(ToolCall, BoxExecutor<T>)>,
+    ) -> Vec<BatchResult<T>> {
+        let classified: Vec<(ToolCall, BoxExecutor<T>, Classification, bool)> = calls
+            .into_iter()
+            .map(|(call, exec)| {
+                let c = (self.classify)(&call);
+                let gated = Self::should_gate(&c);
+                (call, exec, c, gated)
+            })
+            .collect();
+
+        // Build requests for gated calls and remember their positions.
+        let mut requests = Vec::new();
+        let mut gated_positions = Vec::new();
+        for (i, (call, _, c, gated)) in classified.iter().enumerate() {
+            if *gated {
+                gated_positions.push(i);
+                requests.push(ApprovalRequest {
+                    call: call.clone(),
+                    classification: c.clone(),
+                    reason: None,
+                });
+            }
+        }
+
+        // One batch review for the whole turn. Fail-closed if the approver
+        // returns the wrong number of verdicts.
+        let verdicts = if requests.is_empty() {
+            Vec::new()
+        } else {
+            let v = self.approver.review_batch(&requests).await;
+            if v.len() == requests.len() {
+                v
+            } else {
+                (0..requests.len())
+                    .map(|_| Decision::Denied {
+                        reason: Some("approver returned a mismatched verdict count".into()),
+                    })
+                    .collect()
+            }
+        };
+
+        let mut decision_by_pos = std::collections::HashMap::new();
+        for (slot, pos) in gated_positions.iter().enumerate() {
+            decision_by_pos.insert(*pos, verdicts[slot].clone());
+        }
+
+        // Execute in order. (Kept sequential here for a dependency-light core;
+        // callers that want concurrency can spawn the approved executors.)
+        let mut results = Vec::with_capacity(classified.len());
+        for (i, (call, exec, _c, gated)) in classified.into_iter().enumerate() {
+            if gated {
+                match decision_by_pos.get(&i) {
+                    Some(Decision::Approved) => {}
+                    other => {
+                        let reason = match other {
+                            Some(Decision::Denied { reason }) => reason.clone(),
+                            _ => None,
+                        };
+                        results.push(BatchResult::Denied {
+                            call: call.clone(),
+                            error: ApprovalDenied {
+                                request: ApprovalRequest {
+                                    call,
+                                    classification: _c,
+                                    reason: None,
+                                },
+                                reason,
+                            },
+                        });
+                        continue;
+                    }
+                }
+            }
+            let value = exec().await;
+            results.push(BatchResult::Fulfilled { call, value });
+        }
+        results
+    }
 }
 
 #[cfg(test)]
@@ -240,5 +361,49 @@ mod tests {
             .await;
         assert!(res.is_err());
         assert!(!ran);
+    }
+
+    /// Approves everything except destructive calls — a realistic batch policy.
+    struct PolicyApprover;
+
+    #[async_trait]
+    impl Approver for PolicyApprover {
+        async fn review(&self, r: &ApprovalRequest) -> Decision {
+            if r.classification.destructive {
+                Decision::Denied {
+                    reason: Some("destructive".into()),
+                }
+            } else {
+                Decision::Approved
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn guard_all_runs_approved_and_reads_but_not_denied() {
+        let gate = ApprovalGate::new(PolicyApprover);
+        let results = gate
+            .guard_all(vec![
+                (call("search_incidents"), executor(|| async { "list" })),
+                (call("ack_incident"), executor(|| async { "acked" })),
+                (call("delete_service"), executor(|| async { "gone" })),
+            ])
+            .await;
+
+        assert_eq!(results.len(), 3);
+        assert!(matches!(results[0], BatchResult::Fulfilled { .. }));
+        assert!(matches!(results[1], BatchResult::Fulfilled { .. }));
+        assert!(matches!(results[2], BatchResult::Denied { .. }));
+        // Order is preserved so results map back onto the model's tool calls.
+        assert_eq!(results[2].call_name(), "delete_service");
+    }
+
+    impl<T> BatchResult<T> {
+        fn call_name(&self) -> &str {
+            match self {
+                BatchResult::Fulfilled { call, .. } => &call.name,
+                BatchResult::Denied { call, .. } => &call.name,
+            }
+        }
     }
 }

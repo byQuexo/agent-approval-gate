@@ -113,3 +113,94 @@ test("protect() wraps a plain tool function", async () => {
   const send = gate.protect("send_sms", async (a: { to: string }) => `sent:${a.to}`);
   assert.equal(await send({ to: "123" }), "sent:123");
 });
+
+// ---------------------------------------------------------------------------
+// Parallel / batch tool calls
+// ---------------------------------------------------------------------------
+
+test("guardAll: reads run, writes gated per-call, results keep input order", async () => {
+  const gate = createGate({
+    batchApprover: async (reqs) => {
+      // Approve the ack, deny the delete. Each judged on its own.
+      const out: Record<string, { approved: boolean; reason?: string }> = {};
+      for (const r of reqs) {
+        out[r.call.id] = r.classification.destructive
+          ? { approved: false, reason: "blocked" }
+          : { approved: true };
+      }
+      return out as any;
+    },
+  });
+
+  const ran: string[] = [];
+  const results = await gate.guardAll([
+    { call: call("search_incidents", {}), execute: () => (ran.push("read"), "list") },
+    { call: call("ack_incident", { id: "1" }), execute: () => (ran.push("ack"), "acked") },
+    { call: call("delete_service", { n: "x" }), execute: () => (ran.push("del"), "gone") },
+  ]);
+
+  assert.equal(results[0]?.status, "fulfilled");
+  assert.equal(results[1]?.status, "fulfilled");
+  assert.equal(results[2]?.status, "denied");
+  assert.deepEqual(results.map((r) => r.call.name), [
+    "search_incidents",
+    "ack_incident",
+    "delete_service",
+  ]);
+  assert.ok(!ran.includes("del"), "denied call must not execute");
+  assert.ok(ran.includes("read") && ran.includes("ack"));
+});
+
+test("guardAll: batchApprover is invoked exactly once with all gated calls", async () => {
+  let batches = 0;
+  let sawGated = 0;
+  const gate = createGate({
+    approver: allow,
+    batchApprover: async (reqs) => {
+      batches++;
+      sawGated = reqs.length;
+      return Object.fromEntries(reqs.map((r) => [r.call.id, { approved: true }])) as any;
+    },
+  });
+  await gate.guardAll([
+    { call: call("read_a"), execute: () => 1 },
+    { call: call("create_b"), execute: () => 2 },
+    { call: call("update_c"), execute: () => 3 },
+  ]);
+  assert.equal(batches, 1, "one batch review for the whole turn");
+  assert.equal(sawGated, 2, "only the two writes are shown to the approver");
+});
+
+test("guardAll: fail-closed when the batch approver omits a call", async () => {
+  const gate = createGate({
+    approver: allow,
+    batchApprover: async () => ({}) as any, // returns no verdicts
+  });
+  const [res] = await gate.guardAll([
+    { call: call("delete_everything"), execute: () => "boom" },
+  ]);
+  assert.equal(res?.status, "denied");
+});
+
+test("guardAll: captures a thrown tool error as 'rejected', not a crash", async () => {
+  const gate = createGate({ approver: allow });
+  const results = await gate.guardAll([
+    { call: call("create_x"), execute: () => { throw new Error("kaboom"); } },
+    { call: call("create_y"), execute: () => "ok" },
+  ]);
+  assert.equal(results[0]?.status, "rejected");
+  assert.equal(results[1]?.status, "fulfilled");
+});
+
+test("guardAll: falls back to the single approver when no batchApprover is set", async () => {
+  let asked = 0;
+  const gate = createGate({
+    approver: async () => (asked++, { approved: true }),
+  });
+  await gate.guardAll([
+    { call: call("read_a"), execute: () => 1 },
+    { call: call("create_b"), execute: () => 2 },
+    { call: call("delete_c"), execute: () => 3 },
+  ]);
+  assert.equal(asked, 2, "one approval per gated call, reads skipped");
+});

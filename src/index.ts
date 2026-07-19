@@ -9,10 +9,13 @@ export type {
   ApprovalDecision,
   ApprovalRequest,
   Approver,
+  BatchApprover,
+  BatchResult,
   Classification,
   Classifier,
   Describe,
   GateOptions,
+  GuardedCall,
   Sensitivity,
   ToolCall,
 } from "./types.js";
