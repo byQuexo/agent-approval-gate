@@ -1,0 +1,46 @@
+{
+  "name": "agent-approval-gate",
+  "version": "0.1.0",
+  "description": "Human-in-the-loop approval gate for LLM agent tool calls. Classify tools read/write, block destructive calls behind an approver, and never persist a grant across turns.",
+  "type": "module",
+  "license": "MIT",
+  "author": "byQuexo",
+  "keywords": [
+    "llm",
+    "agent",
+    "tools",
+    "tool-calling",
+    "human-in-the-loop",
+    "approval",
+    "guardrails",
+    "ai-sdk",
+    "mcp",
+    "rig"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./ai-sdk": {
+      "types": "./dist/adapters/ai-sdk.d.ts",
+      "import": "./dist/adapters/ai-sdk.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/",
+    "example": "tsc -p tsconfig.test.json && node dist-test/examples/basic.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-test/
+*.tsbuildinfo
+.DS_Store
+*.log
+.env
+.env.*
+
+# Rust
+/crates/**/target/
+target/

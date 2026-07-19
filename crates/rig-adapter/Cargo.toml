@@ -1,0 +1,23 @@
+[package]
+name = "agent-approval-gate"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Human-in-the-loop approval gate for LLM agent tool calls (Rust core + Rig adapter)."
+repository = "https://github.com/byQuexo/agent-approval-gate"
+keywords = ["llm", "agent", "tools", "human-in-the-loop", "rig"]
+categories = ["asynchronous"]
+
+[dependencies]
+async-trait = "0.1"
+serde_json = "1"
+
+# Optional: enable the Rig adapter with `--features rig` once wired up.
+# rig-core = { version = "0.35", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[features]
+default = []
+# rig = ["dep:rig-core"]
