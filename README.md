@@ -151,6 +151,33 @@ for (const r of results) {
 > or web UIs). For a single *batched* approval prompt, drive tools through
 > `guardAll` in your own loop or an MCP middleware.
 
+## Gate an MCP client (protocol-layer middleware)
+
+Wrap a [Model Context Protocol](https://modelcontextprotocol.io) client and
+every tool call — for *any* server it's connected to — is gated at the transport,
+before the request leaves the host. You don't enumerate the tools; the gate's
+classifier does the work by name.
+
+```ts
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { createGate } from "agent-approval-gate";
+import { withApprovalGate } from "agent-approval-gate/mcp";
+
+const raw = new Client({ name: "host", version: "1.0.0" });
+await raw.connect(transport);
+
+const client = withApprovalGate(raw, createGate({ classify, approver }));
+
+// reads pass straight through; delete_* etc. wait for approval
+await client.callTool({ name: "delete_service", arguments: { name: "canary" } });
+```
+
+By default a denied call resolves to an **MCP error result**
+(`{ isError: true, content: [{ type: "text", text: "…denied…" }] }`) so the model
+sees the refusal as the tool output and can react. Pass `{ rethrow: true }` to
+throw `ApprovalDeniedError` instead, or `{ onDenied }` to shape the result. The
+wrapper is structurally typed — no dependency on `@modelcontextprotocol/sdk`.
+
 ## How classification works
 
 - **`staticClassifier(map)`** — the production path. Declare each tool's
@@ -225,6 +252,7 @@ peer dependency. Install it if you use YAML: `npm install yaml`.
 | `staticClassifier(map, fallback?)` | Per-tool classification map (in code). |
 | `classifierFromConfig(config)` | Build a classifier from a `PolicyConfig` object (pure, zero-dep). |
 | `loadPolicyFile(path)` / `classifierFromYaml(text)` / `parsePolicy(text)` | YAML loaders — from `agent-approval-gate/yaml`. |
+| `withApprovalGate(tools, gate)` / `withApprovalGate(client, gate, opts?)` | Adapters — from `agent-approval-gate/ai-sdk` (tool set) and `agent-approval-gate/mcp` (MCP client). |
 | `validatePolicy(obj)` | Assert a config is well-formed; throws `PolicyConfigError`. |
 | `defaultClassifier` / `defaultGate` | The built-in heuristics. |
 | `ApprovalDeniedError` | Thrown when an approver denies a call. |
@@ -268,7 +296,7 @@ cd crates/rig-adapter && cargo test --features rig   # requires Rust 1.85+
 ## Roadmap
 
 - [x] YAML-driven policies (`agent-approval-gate/yaml`)
-- [ ] MCP middleware adapter (gate tool calls at the protocol layer)
+- [x] MCP middleware adapter (`agent-approval-gate/mcp`) — gate calls at the protocol layer
 - [ ] LangChain / LangGraph adapter
 - [x] Rust core + Rig `Tool` adapter (`crates/rig-adapter`, `--features rig`)
 - [ ] Rust: load the same YAML policy format (serde)

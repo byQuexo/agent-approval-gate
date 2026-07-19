@@ -28,6 +28,10 @@
       "types": "./dist/adapters/ai-sdk.d.ts",
       "import": "./dist/adapters/ai-sdk.js"
     },
+    "./mcp": {
+      "types": "./dist/adapters/mcp.d.ts",
+      "import": "./dist/adapters/mcp.js"
+    },
     "./yaml": {
       "types": "./dist/yaml.d.ts",
       "import": "./dist/yaml.js"
