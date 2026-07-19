@@ -6,6 +6,7 @@ rust-version = "1.85"
 license = "MIT"
 description = "Human-in-the-loop approval gate for LLM agent tool calls (Rust core + Rig adapter)."
 repository = "https://github.com/byQuexo/agent-approval-gate"
+readme = "README.md"
 keywords = ["llm", "agent", "tools", "human-in-the-loop", "rig"]
 categories = ["asynchronous"]
 
