@@ -5,6 +5,12 @@
   "type": "module",
   "license": "MIT",
   "author": "byQuexo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/byQuexo/agent-approval-gate.git"
+  },
+  "homepage": "https://github.com/byQuexo/agent-approval-gate#readme",
+  "bugs": "https://github.com/byQuexo/agent-approval-gate/issues",
   "keywords": [
     "llm",
     "agent",
@@ -59,7 +65,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "tsc -p tsconfig.test.json && node --test dist-test/test/",
-    "example": "tsc -p tsconfig.test.json && node dist-test/examples/basic.js"
+    "example": "tsc -p tsconfig.test.json && node dist-test/examples/basic.js",
+    "prepublishOnly": "npm run build"
   },
   "engines": {
     "node": ">=20"
