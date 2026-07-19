@@ -188,11 +188,34 @@ npm run example   # narrated demo, no API key needed
 npm test          # includes the no-caching security test
 ```
 
+## Rust + Rig
+
+There's a companion Rust crate in [`crates/rig-adapter`](crates/rig-adapter) with
+the same core contract, plus a first-class adapter for the
+[Rig](https://github.com/0xPlaygrounds/rig) LLM framework. Wrap any Rig `Tool` —
+`Gated<T>` is itself a `Tool`, so it drops straight into an agent:
+
+```rust
+use std::sync::Arc;
+use agent_approval_gate::{ApprovalGate, rig::Gated};
+
+let gate = Arc::new(ApprovalGate::new(my_approver));
+let agent = client
+    .agent("gpt-4o")
+    .tool(Gated::new(SearchIncidents, gate.clone())) // read  — never prompts
+    .tool(Gated::new(DeleteService,   gate.clone())) // write — gated
+    .build();
+```
+
+```bash
+cd crates/rig-adapter && cargo test --features rig   # requires Rust 1.85+
+```
+
 ## Roadmap
 
 - [ ] MCP middleware adapter (gate tool calls at the protocol layer)
 - [ ] LangChain / LangGraph adapter
-- [ ] `crates/rig-adapter` — Rust adapter for the [Rig](https://github.com/0xPlaygrounds/rig) LLM framework (stub in tree)
+- [x] Rust core + Rig `Tool` adapter (`crates/rig-adapter`, `--features rig`)
 - [ ] Policy presets (finance, infra, comms)
 
 ## License

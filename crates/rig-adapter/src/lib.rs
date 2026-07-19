@@ -4,8 +4,8 @@
 //! it safe: **an approval is scoped to a single tool call and is never cached
 //! across calls or turns.**
 //!
-//! Status: core is usable today; the [Rig](https://github.com/0xPlaygrounds/rig)
-//! `Tool` adapter lands behind the `rig` feature (see `Cargo.toml`).
+//! The [Rig](https://github.com/0xPlaygrounds/rig) `Tool` adapter ([`Gated`])
+//! lives behind the `rig` feature (`--features rig`).
 
 use async_trait::async_trait;
 
@@ -298,6 +298,207 @@ impl<A: Approver> ApprovalGate<A> {
             results.push(BatchResult::Fulfilled { call, value });
         }
         results
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rig adapter (feature = "rig")
+// ---------------------------------------------------------------------------
+
+/// Wrap any [`rig_core::tool::Tool`] so its `call` passes through an
+/// [`ApprovalGate`]. `Gated<T, A>` is itself a `Tool` (and therefore a
+/// `ToolDyn`, via Rig's blanket impl), so it drops straight into an agent
+/// builder or `ToolSet` — reads run untouched, writes wait for approval.
+///
+/// ```ignore
+/// use std::sync::Arc;
+/// use agent_approval_gate::{ApprovalGate, rig::Gated};
+///
+/// let gate = Arc::new(ApprovalGate::new(my_approver));
+/// let agent = client
+///     .agent("gpt-4o")
+///     .tool(Gated::new(SearchIncidents, gate.clone())) // read — never prompts
+///     .tool(Gated::new(DeleteService, gate.clone()))   // write — gated
+///     .build();
+/// ```
+///
+/// Requires `T::Args: serde::Serialize` so the arguments can be shown to the
+/// approver (they are already `Deserialize` for Rig).
+#[cfg(feature = "rig")]
+pub mod rig {
+    use super::{ApprovalDenied, ApprovalGate, Approver, ToolCall};
+    use rig_core::tool::{Tool, ToolCallExtensions};
+    use serde::Serialize;
+    use std::sync::Arc;
+
+    /// Error returned by a [`Gated`] tool: either the human denied the call, or
+    /// the wrapped tool itself failed.
+    #[derive(Debug)]
+    pub enum GatedError<E> {
+        /// The approver denied the call — surface this to the model as the tool
+        /// result so the agent can react instead of crashing. Boxed to keep the
+        /// error type (and thus every tool `Result`) small.
+        Denied(Box<ApprovalDenied>),
+        /// The wrapped tool returned its own error.
+        Inner(E),
+    }
+
+    impl<E: std::fmt::Display> std::fmt::Display for GatedError<E> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                GatedError::Denied(d) => write!(f, "{d}"),
+                GatedError::Inner(e) => write!(f, "{e}"),
+            }
+        }
+    }
+
+    impl<E: std::error::Error + 'static> std::error::Error for GatedError<E> {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            match self {
+                GatedError::Denied(d) => Some(d.as_ref()),
+                GatedError::Inner(e) => Some(e),
+            }
+        }
+    }
+
+    /// A Rig tool wrapped with an approval gate. Build with [`Gated::new`].
+    pub struct Gated<T, A: Approver> {
+        inner: T,
+        gate: Arc<ApprovalGate<A>>,
+    }
+
+    impl<T, A: Approver> Gated<T, A> {
+        pub fn new(inner: T, gate: Arc<ApprovalGate<A>>) -> Self {
+            Self { inner, gate }
+        }
+    }
+
+    impl<T, A> Tool for Gated<T, A>
+    where
+        T: Tool,
+        T::Args: Serialize,
+        A: Approver + 'static,
+    {
+        const NAME: &'static str = T::NAME;
+        type Error = GatedError<T::Error>;
+        type Args = T::Args;
+        type Output = T::Output;
+
+        fn name(&self) -> String {
+            self.inner.name()
+        }
+        fn description(&self) -> String {
+            self.inner.description()
+        }
+        fn parameters(&self) -> serde_json::Value {
+            self.inner.parameters()
+        }
+
+        async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+            let name = self.inner.name();
+            let tc = ToolCall {
+                id: name.clone(),
+                name,
+                args: serde_json::to_value(&args).unwrap_or(serde_json::Value::Null),
+            };
+            flatten(self.gate.guard(tc, || async move { self.inner.call(args).await }).await)
+        }
+
+        async fn call_with_extensions(
+            &self,
+            args: Self::Args,
+            extensions: &ToolCallExtensions,
+        ) -> Result<Self::Output, Self::Error> {
+            // Gate on the dynamic/agent path too, forwarding extensions so the
+            // wrapped tool still sees any injected auth/session values.
+            let name = self.inner.name();
+            let tc = ToolCall {
+                id: name.clone(),
+                name,
+                args: serde_json::to_value(&args).unwrap_or(serde_json::Value::Null),
+            };
+            flatten(
+                self.gate
+                    .guard(tc, || async move {
+                        self.inner.call_with_extensions(args, extensions).await
+                    })
+                    .await,
+            )
+        }
+    }
+
+    /// Collapse the gate's `Result<Result<O, E>, ApprovalDenied>` into the
+    /// tool's `Result<O, GatedError<E>>`.
+    fn flatten<O, E>(
+        r: Result<Result<O, E>, ApprovalDenied>,
+    ) -> Result<O, GatedError<E>> {
+        match r {
+            Ok(Ok(out)) => Ok(out),
+            Ok(Err(e)) => Err(GatedError::Inner(e)),
+            Err(d) => Err(GatedError::Denied(Box::new(d))),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{Gated, GatedError};
+        use crate::{ApprovalGate, ApprovalRequest, Approver, Decision};
+        use rig_core::tool::Tool;
+        use std::sync::Arc;
+
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct Args {
+            name: String,
+        }
+
+        struct DeleteService;
+        impl Tool for DeleteService {
+            const NAME: &'static str = "delete_service";
+            type Error = std::convert::Infallible;
+            type Args = Args;
+            type Output = String;
+            fn description(&self) -> String {
+                "deletes a service".into()
+            }
+            fn parameters(&self) -> serde_json::Value {
+                serde_json::json!({ "type": "object" })
+            }
+            async fn call(&self, args: Args) -> Result<String, Self::Error> {
+                Ok(format!("deleted {}", args.name))
+            }
+        }
+
+        struct DenyAll;
+        #[async_trait::async_trait]
+        impl Approver for DenyAll {
+            async fn review(&self, _r: &ApprovalRequest) -> Decision {
+                Decision::Denied { reason: Some("policy".into()) }
+            }
+        }
+
+        struct AllowAll;
+        #[async_trait::async_trait]
+        impl Approver for AllowAll {
+            async fn review(&self, _r: &ApprovalRequest) -> Decision {
+                Decision::Approved
+            }
+        }
+
+        #[tokio::test]
+        async fn wrapped_write_tool_is_denied() {
+            let gate = Arc::new(ApprovalGate::new(DenyAll));
+            let tool = Gated::new(DeleteService, gate);
+            let res = tool.call(Args { name: "prod-api".into() }).await;
+            assert!(matches!(res, Err(GatedError::Denied(_))));
+        }
+
+        #[tokio::test]
+        async fn wrapped_write_tool_runs_when_approved() {
+            let gate = Arc::new(ApprovalGate::new(AllowAll));
+            let tool = Gated::new(DeleteService, gate);
+            let out = tool.call(Args { name: "canary".into() }).await.unwrap();
+            assert_eq!(out, "deleted canary");
+        }
     }
 }
 
