@@ -65,15 +65,16 @@ test("openai: gates tool_calls, returns role:tool messages in order", async () =
   assert.deepEqual(ran, ["search"]);
 });
 
-test("openai: malformed arguments string degrades to empty object", async () => {
+test("openai: malformed arguments are rejected and the tool never runs", async () => {
   const seen: Record<string, unknown>[] = [];
   const message = {
     tool_calls: [{ id: "a", function: { name: "search", arguments: "not json" } }],
   };
-  await guardOpenAIToolCalls(message, createGate({ classify, approver: async () => ({ approved: true }) }), {
+  const [out] = await guardOpenAIToolCalls(message, createGate({ classify, approver: async () => ({ approved: true }) }), {
     runTool: (_n, args) => (seen.push(args), "ok"),
   });
-  assert.deepEqual(seen[0], {});
+  assert.deepEqual(seen, []);
+  assert.match(out?.content ?? "", /not a JSON object/);
 });
 
 // ---------------------------------------------------------------------------

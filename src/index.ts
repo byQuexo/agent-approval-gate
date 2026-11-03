@@ -31,6 +31,7 @@ export type {
   Classification,
   Classifier,
   Describe,
+  Execute,
   GateOptions,
   GuardedCall,
   Sensitivity,

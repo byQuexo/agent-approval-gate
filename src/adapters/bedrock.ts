@@ -104,7 +104,7 @@ export async function guardBedrockToolUses(
     toolUses.map((block) => {
       const { toolUseId, name, input } = block.toolUse;
       const call: ToolCall = { id: toolUseId, name, args: input ?? {} };
-      return { call, execute: () => options.runTool(name, input ?? {}, call) };
+      return { call, execute: (args) => options.runTool(name, args, call) };
     }),
   );
 

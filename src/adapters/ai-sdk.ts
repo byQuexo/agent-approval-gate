@@ -49,7 +49,7 @@ export function withApprovalGate<T extends ToolSet>(tools: T, gate: ApprovalGate
             : undefined) ?? name;
         return gate.guard(
           { id, name, args: (args ?? {}) as Record<string, unknown> },
-          () => execute(args, options),
+          (approved) => execute(approved, options),
         );
       },
     };
