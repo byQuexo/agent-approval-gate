@@ -327,10 +327,13 @@ with `gate: (classification, call) => boolean` — but destructive calls are
 Hard-coding `staticClassifier({...})` gets unwieldy as tools grow — and it means
 a code change (and a deploy) every time you want to gate one more tool. Move the
 policy into a YAML file instead, so it's reviewable, diffable, and editable by
-people who don't touch the agent code:
+people who don't touch the agent code.
+
+> Quick start: copy the real example at [`examples/policy.yml`](examples/policy.yml)
+> (or one of the domain presets under [`presets/`](presets/)), then load it:
 
 ```yaml
-# policy.yml
+# examples/policy.yml
 version: 1
 defaults:
   unlisted: heuristic          # heuristic | read | write  (write = gate everything unknown)
@@ -348,7 +351,7 @@ import { createGate } from "agent-approval-gate";
 import { loadPolicyFile } from "agent-approval-gate/yaml"; // needs the `yaml` package
 
 const gate = createGate({
-  classify: loadPolicyFile("./policy.yml"),
+  classify: loadPolicyFile("./examples/policy.yml"),
   approver: myApprover,
 });
 ```
