@@ -2,7 +2,13 @@
 // mechanism, expired approvals, timeouts, malformed tool arguments.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ApprovalDeniedError, createGate, defaultClassifier, defaultGate } from "../src/index.js";
+import {
+  ApprovalDeniedError,
+  createGate,
+  defaultClassifier,
+  defaultGate,
+  staticClassifier,
+} from "../src/index.js";
 import { guardOpenAIToolCalls } from "../src/adapters/openai.js";
 import type { ApprovalDecision, ToolCall } from "../src/index.js";
 
@@ -106,6 +112,18 @@ test("bypass: a leading read verb does not unlock a name that also writes", () =
   ]) {
     assert.ok(gated(name), name);
   }
+});
+
+test("bypass: a tool named after an Object prototype key falls back, not through", () => {
+  const classify = staticClassifier({ search: { sensitivity: "read" } });
+  for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    assert.ok(defaultGate(classify(call(name))), name);
+  }
+});
+
+test("bypass: a classifier that returns junk sensitivity is gated", () => {
+  assert.ok(defaultGate({ sensitivity: "READ" } as never));
+  assert.ok(defaultGate({} as never));
 });
 
 test("reads in any spelling still run without a prompt", () => {
