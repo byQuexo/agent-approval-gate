@@ -50,10 +50,16 @@ export type ApprovalDecision =
   | { readonly approved: true }
   | { readonly approved: false; readonly reason?: string };
 
+/**
+ * Runs the tool. Receives its own copy of the args the approver saw, so what
+ * was approved is what runs even if the caller's object changed meanwhile.
+ */
+export type Execute<T> = (args: Record<string, unknown>) => Promise<T> | T;
+
 /** A tool call paired with its executor, for batch guarding. */
 export interface GuardedCall<T> {
   readonly call: ToolCall;
-  readonly execute: () => Promise<T> | T;
+  readonly execute: Execute<T>;
 }
 
 /**
@@ -109,7 +115,15 @@ export interface GateOptions {
    * Default: gate every `write` and everything `destructive`.
    */
   readonly gate?: (classification: Classification, call: ToolCall) => boolean;
-  /** Optional reason generator surfaced to the approver. */
+  /**
+   * Deny a gated call when no decision arrives within this many milliseconds.
+   * A late "yes" is discarded, so a stale approval can never run.
+   */
+  readonly approvalTimeoutMs?: number;
+  /**
+   * Optional reason generator surfaced to the approver. If an LLM writes it, a
+   * prompt injection can write it too: show the raw args next to it.
+   */
   readonly describe?: Describe;
   /** Called after every decision — wire this to your audit log. */
   readonly onDecision?: (

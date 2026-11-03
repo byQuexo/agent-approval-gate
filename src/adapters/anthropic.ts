@@ -81,7 +81,7 @@ export async function guardAnthropicToolUses(
   const results = await gate.guardAll(
     toolUses.map((tu) => {
       const call: ToolCall = { id: tu.id, name: tu.name, args: tu.input ?? {} };
-      return { call, execute: () => options.runTool(tu.name, tu.input ?? {}, call) };
+      return { call, execute: (args) => options.runTool(tu.name, args, call) };
     }),
   );
 

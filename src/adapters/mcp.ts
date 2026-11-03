@@ -85,7 +85,8 @@ export function withApprovalGate<C extends McpClientLike>(
           name,
           args: params?.arguments ?? {},
         };
-        const run = () => original(params, ...rest);
+        const run = (args: Record<string, unknown>) =>
+          original({ ...params, arguments: args }, ...rest);
 
         if (options.rethrow) return gate.guard(call, run);
 

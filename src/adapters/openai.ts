@@ -48,14 +48,15 @@ function toText(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-/** Parse the JSON arguments string; malformed or empty input becomes `{}`. */
-function parseArgs(raw: string | undefined): Record<string, unknown> {
-  if (!raw) return {};
+/** Parse the JSON arguments string; empty means `{}`, anything not a JSON object is `undefined`. */
+function parseArgs(raw: string | undefined): Record<string, unknown> | undefined {
+  if (!raw?.trim()) return {};
   try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    const parsed: unknown = JSON.parse(raw);
+    const isObject = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+    return isObject ? (parsed as Record<string, unknown>) : undefined;
   } catch {
-    return {};
+    return undefined;
   }
 }
 
@@ -79,20 +80,36 @@ export async function guardOpenAIToolCalls(
   options: OpenAIGuardOptions,
 ): Promise<OpenAIToolMessage[]> {
   const serialize = options.serialize ?? toText;
-  const toolCalls = message.tool_calls ?? [];
+  const parsed = (message.tool_calls ?? []).map((tc) => ({
+    tc,
+    name: tc.function?.name ?? "unknown",
+    args: parseArgs(tc.function?.arguments),
+  }));
 
+  // Malformed arguments never reach the approver: there is no call it could approve.
+  const valid = parsed.filter((p) => p.args !== undefined);
   const results = await gate.guardAll(
-    toolCalls.map((tc) => {
-      const args = parseArgs(tc.function?.arguments);
-      const call: ToolCall = { id: tc.id, name: tc.function?.name ?? "unknown", args };
-      return { call, execute: () => options.runTool(call.name, args, call) };
+    valid.map(({ tc, name, args }) => {
+      const call: ToolCall = { id: tc.id, name, args: args! };
+      return { call, execute: (approved) => options.runTool(name, approved, call) };
     }),
   );
 
-  return results.map((result): OpenAIToolMessage => ({
-    role: "tool",
-    tool_call_id: result.call.id,
-    content:
-      result.status === "fulfilled" ? serialize(result.value) : errorMessage(result),
-  }));
+  let next = 0;
+  return parsed.map(({ tc, name, args }): OpenAIToolMessage => {
+    if (args === undefined) {
+      return {
+        role: "tool",
+        tool_call_id: tc.id,
+        content: `Tool call "${name}" was rejected: its arguments are not a JSON object.`,
+      };
+    }
+    const result = results[next++]!;
+    return {
+      role: "tool",
+      tool_call_id: result.call.id,
+      content:
+        result.status === "fulfilled" ? serialize(result.value) : errorMessage(result),
+    };
+  });
 }

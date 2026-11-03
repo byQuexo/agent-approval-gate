@@ -52,6 +52,8 @@ pub enum Decision {
 }
 
 /// Decides whether a held call may run. Invoked **once per gated call**.
+// The lint fires inside async_trait's expansion, not on code we wrote.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Approver: Send + Sync {
     async fn review(&self, request: &ApprovalRequest) -> Decision;
@@ -120,41 +122,87 @@ impl std::fmt::Display for ApprovalDenied {
 
 impl std::error::Error for ApprovalDenied {}
 
-/// Verb-prefix heuristic mirroring the TS `defaultClassifier`.
+/// A name whose own leading word is one of these may run without approval.
+const READ_VERBS: &[&str] = &[
+    "get", "list", "search", "read", "find", "fetch", "describe", "show", "view", "lookup",
+    "count", "inspect", "preview",
+];
+
+/// Verbs that mutate even after a read verb (`read_write_config`). Kept to
+/// unambiguous verbs so noun-like reads (`get_order`, `get_post`) stay reads.
+const WRITE_VERBS: &[&str] = &[
+    "create", "update", "patch", "insert", "upsert", "append", "write", "edit", "modify",
+    "replace", "rename", "move", "save", "submit", "send", "publish", "deploy", "restart",
+    "reboot", "shutdown", "execute", "exec", "invoke", "grant", "approve", "reject",
+    "acknowledge", "ack", "resolve", "assign", "invite", "rollback", "restore", "migrate",
+    "provision", "enable", "disable", "toggle", "unlock", "unblock", "reset", "flush",
+];
+
+/// A read verb chained to anything else (`get_user_and_nuke`) is not a read.
+const CONNECTIVES: &[&str] = &[
+    "and", "then", "or", "plus", "also",
+];
+
+/// Words whose effects are hard or impossible to undo.
+const DESTRUCTIVE_VERBS: &[&str] = &[
+    "delete", "del", "remove", "rm", "unlink", "drop", "destroy", "terminate", "kill", "purge",
+    "wipe", "erase", "truncate", "overwrite", "force", "cleanup", "prune", "uninstall",
+    "deprovision", "decommission", "revoke", "ban", "cancel", "pay", "charge", "transfer",
+    "wire", "refund", "withdraw",
+];
+
+/// `mcp__srv__getOrCreate-user.v2` -> `mcp srv get or create user v`
+fn words(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if !c.is_ascii_alphabetic() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            continue;
+        }
+        if c.is_ascii_uppercase() && !cur.is_empty() {
+            let prev = chars[i - 1];
+            let next_is_lower = chars.get(i + 1).is_some_and(|n| n.is_ascii_lowercase());
+            if prev.is_ascii_lowercase() || (prev.is_ascii_uppercase() && next_is_lower) {
+                out.push(std::mem::take(&mut cur));
+            }
+        }
+        cur.push(c.to_ascii_lowercase());
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Drop an `mcp__<server>__` prefix and any `ns.` / `ns/` / `ns:` namespace.
+fn local_name(name: &str) -> &str {
+    let rest = name
+        .strip_prefix("mcp__")
+        .and_then(|r| r.get(1..)?.find("__").map(|i| &r[i + 3..]))
+        .unwrap_or(name);
+    rest.rsplit(['.', ':', '/']).next().unwrap_or(rest)
+}
+
+/// Fail-closed heuristic mirroring the TS `defaultClassifier`: a call is a read
+/// only when its own name starts with a read verb and no mutating word or
+/// connective appears anywhere in the full name. Everything else, unknown names included, is a write.
 pub fn default_classify(call: &ToolCall) -> Classification {
-    const WRITE: &[&str] = &[
-        "create", "update", "patch", "put", "post", "delete", "remove", "drop", "set", "add",
-        "insert", "write", "send", "publish", "deploy", "restart", "scale", "execute", "run",
-        "apply", "revoke", "grant", "pay", "charge", "transfer", "merge", "cancel",
-    ];
-    const DESTRUCTIVE: &[&str] = &[
-        "delete", "remove", "drop", "revoke", "pay", "charge", "transfer", "cancel", "purge",
-        "wipe",
-    ];
-
-    // First token (split on non-letters), then its leading lowercase run so
-    // camelCase resolves too: `deleteUser` -> `delete`. Falls back to the whole
-    // token lowercased when it doesn't start lowercase.
-    let token = call
-        .name
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .next()
-        .unwrap_or(&call.name);
-    let lead: String = token.chars().take_while(|c| c.is_ascii_lowercase()).collect();
-    let verb = if lead.is_empty() {
-        token.to_ascii_lowercase()
-    } else {
-        lead
-    };
-
-    let destructive = DESTRUCTIVE.contains(&verb.as_str());
-    let is_write = destructive || WRITE.contains(&verb.as_str());
+    let all = words(&call.name);
+    let has = |list: &[&str]| all.iter().any(|w| list.contains(&w.as_str()));
+    let destructive = has(DESTRUCTIVE_VERBS);
+    let mutating = destructive || has(WRITE_VERBS) || has(CONNECTIVES);
+    let lead = words(local_name(&call.name)).into_iter().next().unwrap_or_default();
+    let read = !mutating && READ_VERBS.contains(&lead.as_str());
 
     Classification {
-        sensitivity: if is_write {
-            Sensitivity::Write
-        } else {
+        sensitivity: if read {
             Sensitivity::Read
+        } else {
+            Sensitivity::Write
         },
         destructive,
         label: None,
@@ -193,6 +241,8 @@ impl<A: Approver> ApprovalGate<A> {
 
     /// Request approval (if gated) and run `execute`. The approver is called
     /// afresh every time — no decision is ever cached.
+    // Boxing the error would change the public API for a one-off denial path.
+    #[allow(clippy::result_large_err)]
     pub async fn guard<T, F, Fut>(
         &self,
         call: ToolCall,
@@ -581,6 +631,39 @@ mod tests {
         // camelCase: leading verb must resolve to `delete`, not `deleteuser`.
         assert!(default_classify(&call("deleteUser")).destructive);
         assert_eq!(default_classify(&call("listAlerts")).sensitivity, Sensitivity::Read);
+    }
+
+    #[test]
+    fn default_classify_fails_closed_like_the_ts_heuristic() {
+        let gated = |n: &str| default_classify(&call(n)).sensitivity == Sensitivity::Write;
+        for n in [
+            "shell",
+            "terminate_instance",
+            "wire_funds",
+            "DeleteUser",
+            "db.update",
+            "mcp__prod__delete_service",
+            "getOrCreateUser",
+            "search_and_replace",
+            "get_user_and_nuke",
+            "x",
+        ] {
+            assert!(gated(n), "{n}");
+        }
+        for n in [
+            "GetUser",
+            "LIST_USERS",
+            "describe-stack",
+            "github.list_repos",
+            "mcp__github__get_issue",
+            "get_order",
+            "get_merge_request",
+        ] {
+            assert!(!gated(n), "{n}");
+        }
+        for n in ["deleteURL", "DELETE_USER", "delete2_user", "user.drop", "api/rm_file", "HTTPDelete"] {
+            assert!(default_classify(&call(n)).destructive, "{n}");
+        }
     }
 
     /// Approves everything except destructive calls — a realistic batch policy.

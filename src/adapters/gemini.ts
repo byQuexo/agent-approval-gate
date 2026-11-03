@@ -96,7 +96,7 @@ export async function guardGeminiFunctionCalls(
     calls.map((fc, index) => {
       const args = fc.args ?? {};
       const call: ToolCall = { id: `${fc.name}#${index}`, name: fc.name, args };
-      return { call, execute: () => options.runTool(fc.name, args, call) };
+      return { call, execute: (approved) => options.runTool(fc.name, approved, call) };
     }),
   );
 

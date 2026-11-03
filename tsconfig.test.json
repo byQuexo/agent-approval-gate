@@ -6,5 +6,5 @@
     "declaration": false,
     "declarationMap": false
   },
-  "include": ["src", "test", "examples"]
+  "include": ["src", "test", "examples", "eval"]
 }
