@@ -17,84 +17,62 @@ const READ_VERBS = new Set([
   "preview",
 ]);
 
-/** Mutating words; any of them anywhere in the name overrides a read verb. */
+/**
+ * Verbs that mutate even after a read verb (`read_write_config`). Kept to
+ * unambiguous verbs so noun-like reads (`get_order`, `get_post`) stay reads.
+ */
 const WRITE_VERBS = new Set([
   "create",
   "update",
   "patch",
-  "put",
-  "post",
-  "set",
-  "add",
   "insert",
   "upsert",
   "append",
   "write",
   "edit",
   "modify",
-  "change",
   "replace",
   "rename",
   "move",
   "save",
-  "store",
-  "upload",
-  "import",
-  "push",
-  "commit",
-  "merge",
   "submit",
   "send",
   "publish",
-  "notify",
-  "email",
-  "message",
-  "reply",
-  "invite",
-  "assign",
-  "ack",
-  "acknowledge",
-  "resolve",
-  "close",
-  "reopen",
+  "deploy",
+  "restart",
+  "reboot",
+  "shutdown",
+  "execute",
+  "exec",
+  "invoke",
+  "grant",
   "approve",
   "reject",
-  "enable",
-  "disable",
-  "toggle",
-  "lock",
-  "unlock",
-  "block",
-  "unblock",
-  "deploy",
+  "acknowledge",
+  "ack",
+  "resolve",
+  "assign",
+  "invite",
   "rollback",
   "restore",
   "migrate",
   "provision",
-  "install",
-  "start",
-  "stop",
-  "restart",
-  "reboot",
-  "shutdown",
-  "scale",
+  "enable",
+  "disable",
+  "toggle",
+  "unlock",
+  "unblock",
   "reset",
-  "clear",
   "flush",
-  "sync",
-  "schedule",
-  "trigger",
-  "invoke",
-  "execute",
-  "exec",
-  "run",
-  "apply",
-  "grant",
-  "order",
-  "buy",
-  "sell",
-  "book",
-  "sign",
+]);
+
+/** A read verb chained to anything else (`get_user_and_nuke`) is not a read. */
+const CONNECTIVES = new Set([
+  "and",
+  "then",
+  "or",
+  "plus",
+  "also",
 ]);
 
 /** Words whose effects are hard or impossible to undo. */
@@ -147,14 +125,14 @@ function localName(name: string): string {
 
 /**
  * Fail-closed heuristic: a call is a read only when its own name starts with a
- * read verb and no mutating word appears anywhere in the full name. Everything
+ * read verb and no mutating word or connective appears anywhere in the full name. Everything
  * else, including names it has never seen, is a write and gets gated. Pin the
  * tools that matter with {@link staticClassifier} or a policy file.
  */
 export const defaultClassifier: Classifier = (call: ToolCall): Classification => {
   const all = words(call.name);
   const destructive = all.some((w) => DESTRUCTIVE_VERBS.has(w));
-  const mutating = destructive || all.some((w) => WRITE_VERBS.has(w));
+  const mutating = destructive || all.some((w) => WRITE_VERBS.has(w) || CONNECTIVES.has(w));
   const lead = words(localName(call.name))[0] ?? "";
   const read = !mutating && READ_VERBS.has(lead);
   return {

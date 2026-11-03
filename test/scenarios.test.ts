@@ -109,6 +109,8 @@ test("bypass: a leading read verb does not unlock a name that also writes", () =
     "list_and_delete_users",
     "fetch_then_update",
     "read_write_config",
+    "get_user_and_nuke",
+    "list_then_expunge",
   ]) {
     assert.ok(gated(name), name);
   }
@@ -135,6 +137,13 @@ test("reads in any spelling still run without a prompt", () => {
     "describe-stack",
     "github.list_repos",
     "mcp__github__get_issue",
+    "get_order",
+    "get_post",
+    "get_message",
+    "list_order_items",
+    "get_merge_request",
+    "get_commit",
+    "get_run",
   ]) {
     assert.ok(!gated(name), name);
   }
@@ -163,6 +172,19 @@ test("fuzz: every spelling of a destructive call stays destructive", () => {
   for (let i = 0; i < 2000; i++) {
     const name = pick(spellings)(pick(verbs), pick(nouns));
     assert.equal(defaultClassifier(call(name)).destructive, true, name);
+  }
+});
+
+test("fuzz: a read verb chained to an unknown verb is gated", () => {
+  const rand = seeded(11);
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)] as T;
+  const gibberish = () =>
+    Array.from({ length: 4 + Math.floor(rand() * 6) }, () =>
+      String.fromCharCode(97 + Math.floor(rand() * 26)),
+    ).join("");
+  for (let i = 0; i < 2000; i++) {
+    const name = `${pick(["get", "list", "search", "fetch"])}_${pick(["user", "order", "db"])}_${pick(["and", "then", "or"])}_${gibberish()}`;
+    assert.ok(gated(name), name);
   }
 });
 

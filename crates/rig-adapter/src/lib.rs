@@ -52,6 +52,8 @@ pub enum Decision {
 }
 
 /// Decides whether a held call may run. Invoked **once per gated call**.
+// The lint fires inside async_trait's expansion, not on code we wrote.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Approver: Send + Sync {
     async fn review(&self, request: &ApprovalRequest) -> Decision;
@@ -126,17 +128,19 @@ const READ_VERBS: &[&str] = &[
     "count", "inspect", "preview",
 ];
 
-/// Mutating words; any of them anywhere in the name overrides a read verb.
+/// Verbs that mutate even after a read verb (`read_write_config`). Kept to
+/// unambiguous verbs so noun-like reads (`get_order`, `get_post`) stay reads.
 const WRITE_VERBS: &[&str] = &[
-    "create", "update", "patch", "put", "post", "set", "add", "insert", "upsert", "append",
-    "write", "edit", "modify", "change", "replace", "rename", "move", "save", "store", "upload",
-    "import", "push", "commit", "merge", "submit", "send", "publish", "notify", "email",
-    "message", "reply", "invite", "assign", "ack", "acknowledge", "resolve", "close", "reopen",
-    "approve", "reject", "enable", "disable", "toggle", "lock", "unlock", "block", "unblock",
-    "deploy", "rollback", "restore", "migrate", "provision", "install", "start", "stop",
-    "restart", "reboot", "shutdown", "scale", "reset", "clear", "flush", "sync", "schedule",
-    "trigger", "invoke", "execute", "exec", "run", "apply", "grant", "order", "buy", "sell",
-    "book", "sign",
+    "create", "update", "patch", "insert", "upsert", "append", "write", "edit", "modify",
+    "replace", "rename", "move", "save", "submit", "send", "publish", "deploy", "restart",
+    "reboot", "shutdown", "execute", "exec", "invoke", "grant", "approve", "reject",
+    "acknowledge", "ack", "resolve", "assign", "invite", "rollback", "restore", "migrate",
+    "provision", "enable", "disable", "toggle", "unlock", "unblock", "reset", "flush",
+];
+
+/// A read verb chained to anything else (`get_user_and_nuke`) is not a read.
+const CONNECTIVES: &[&str] = &[
+    "and", "then", "or", "plus", "also",
 ];
 
 /// Words whose effects are hard or impossible to undo.
@@ -184,13 +188,13 @@ fn local_name(name: &str) -> &str {
 }
 
 /// Fail-closed heuristic mirroring the TS `defaultClassifier`: a call is a read
-/// only when its own name starts with a read verb and no mutating word appears
-/// anywhere in the full name. Everything else, unknown names included, is a write.
+/// only when its own name starts with a read verb and no mutating word or
+/// connective appears anywhere in the full name. Everything else, unknown names included, is a write.
 pub fn default_classify(call: &ToolCall) -> Classification {
     let all = words(&call.name);
     let has = |list: &[&str]| all.iter().any(|w| list.contains(&w.as_str()));
     let destructive = has(DESTRUCTIVE_VERBS);
-    let mutating = destructive || has(WRITE_VERBS);
+    let mutating = destructive || has(WRITE_VERBS) || has(CONNECTIVES);
     let lead = words(local_name(&call.name)).into_iter().next().unwrap_or_default();
     let read = !mutating && READ_VERBS.contains(&lead.as_str());
 
@@ -237,6 +241,8 @@ impl<A: Approver> ApprovalGate<A> {
 
     /// Request approval (if gated) and run `execute`. The approver is called
     /// afresh every time — no decision is ever cached.
+    // Boxing the error would change the public API for a one-off denial path.
+    #[allow(clippy::result_large_err)]
     pub async fn guard<T, F, Fut>(
         &self,
         call: ToolCall,
@@ -639,11 +645,20 @@ mod tests {
             "mcp__prod__delete_service",
             "getOrCreateUser",
             "search_and_replace",
+            "get_user_and_nuke",
             "x",
         ] {
             assert!(gated(n), "{n}");
         }
-        for n in ["GetUser", "LIST_USERS", "describe-stack", "github.list_repos", "mcp__github__get_issue"] {
+        for n in [
+            "GetUser",
+            "LIST_USERS",
+            "describe-stack",
+            "github.list_repos",
+            "mcp__github__get_issue",
+            "get_order",
+            "get_merge_request",
+        ] {
             assert!(!gated(n), "{n}");
         }
         for n in ["deleteURL", "DELETE_USER", "delete2_user", "user.drop", "api/rm_file", "HTTPDelete"] {
