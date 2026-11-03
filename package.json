@@ -1,6 +1,6 @@
 {
   "name": "agent-approval-gate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Human-in-the-loop approval gate for LLM agent tool calls. Classify tools read/write, block destructive calls behind an approver, and never persist a grant across turns.",
   "type": "module",
   "license": "MIT",
