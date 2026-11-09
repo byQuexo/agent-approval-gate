@@ -124,7 +124,8 @@ export class ApprovalGate {
   async #decide(request: ApprovalRequest): Promise<ApprovalDecision> {
     const answer = await this.#withinTimeout(() => this.#approver(request));
     const decision = answer === TIMED_OUT ? this.#timedOut() : normalize(answer);
-    this.#onDecision?.(request, decision);
+    // Awaited, so an async audit hook that rejects fails closed like a sync throw.
+    await this.#onDecision?.(request, decision);
     return decision;
   }
 
@@ -133,6 +134,8 @@ export class ApprovalGate {
    * `execute` receives a copy of exactly the args the approver saw.
    *
    * @throws {ApprovalDeniedError} if the call is denied or times out.
+   * @throws the original error, unwrapped, if `describe`, the approver or the
+   *   `onDecision` hook throws or rejects. `execute` never runs in that case.
    */
   async guard<T>(call: ToolCall, execute: Execute<T>): Promise<T> {
     const approved = snapshot(call);
@@ -160,6 +163,11 @@ export class ApprovalGate {
    * `denied` | `rejected`) in input order. Gated calls whose id appears more
    * than once are denied without asking, since one verdict per id could not
    * tell them apart.
+   *
+   * If `describe`, the approver or the `onDecision` hook throws or rejects for
+   * any call, **every** gated call still pending in the batch is denied
+   * (`approval failed: …`), including calls the hook was already told were
+   * approved. Ungated calls still run.
    */
   async guardAll<T>(calls: readonly GuardedCall<T>[]): Promise<BatchResult<T>[]> {
     const entries = calls.map((c): Entry<T> => {
@@ -201,7 +209,7 @@ export class ApprovalGate {
                   Object.hasOwn(verdicts, e.call.id) ? verdicts[e.call.id] : undefined,
                   "no decision returned for this call",
                 );
-          this.#onDecision?.(e.request!, e.decision);
+          await this.#onDecision?.(e.request!, e.decision);
         }
       } else {
         // Sequential, so CLI prompts don't interleave.

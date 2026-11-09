@@ -701,6 +701,61 @@ mod tests {
         assert_eq!(results[2].call_name(), "delete_service");
     }
 
+    /// The Rust core has no `onDecision` audit hook and `review` cannot return
+    /// an error, so the only "approver failure" is a panic. These tests pin
+    /// that a panic unwinds out of `guard` / `guard_all` before any tool runs.
+    struct PanickingApprover;
+
+    #[async_trait]
+    impl Approver for PanickingApprover {
+        async fn review(&self, _r: &ApprovalRequest) -> Decision {
+            panic!("approval service down");
+        }
+    }
+
+    #[tokio::test]
+    async fn guard_panicking_approver_never_runs_the_tool() {
+        let ran = Arc::new(AtomicUsize::new(0));
+        let flag = ran.clone();
+        let joined = tokio::spawn(async move {
+            let gate = ApprovalGate::new(PanickingApprover);
+            gate.guard(call("delete_user"), || async move {
+                flag.fetch_add(1, Ordering::SeqCst);
+            })
+            .await
+        })
+        .await;
+        assert!(joined.unwrap_err().is_panic());
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn guard_all_panicking_approver_runs_nothing_not_even_reads() {
+        let ran = Arc::new(AtomicUsize::new(0));
+        let (read, write) = (ran.clone(), ran.clone());
+        let joined = tokio::spawn(async move {
+            let gate = ApprovalGate::new(PanickingApprover);
+            gate.guard_all(vec![
+                (
+                    call("get_status"),
+                    executor(move || async move {
+                        read.fetch_add(1, Ordering::SeqCst);
+                    }),
+                ),
+                (
+                    call("delete_user"),
+                    executor(move || async move {
+                        write.fetch_add(1, Ordering::SeqCst);
+                    }),
+                ),
+            ])
+            .await
+        })
+        .await;
+        assert!(joined.unwrap_err().is_panic());
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+    }
+
     impl<T> BatchResult<T> {
         fn call_name(&self) -> &str {
             match self {

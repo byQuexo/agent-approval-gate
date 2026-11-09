@@ -264,6 +264,21 @@ test("approver outage: a throwing single approver in guardAll denies instead of 
   assert.equal(result?.status, "denied");
 });
 
+test("approver outage: a throwing approver makes guard() reject with that error, tool not run", async () => {
+  let ran = 0;
+  const gate = createGate({
+    approver: async () => {
+      throw new Error("pager down");
+    },
+  });
+  await assert.rejects(gate.guard(call("delete_service"), () => ran++), (err: unknown) => {
+    assert.ok(!(err instanceof ApprovalDeniedError));
+    assert.match((err as Error).message, /pager down/);
+    return true;
+  });
+  assert.equal(ran, 0);
+});
+
 test("audit failure: a throwing onDecision blocks the call", async () => {
   let ran = 0;
   const gate = createGate({
@@ -277,6 +292,95 @@ test("audit failure: a throwing onDecision blocks the call", async () => {
   assert.equal(result?.status, "denied");
   assert.equal(ran, 0);
 });
+
+// The two entry points fail closed differently when the onDecision hook fails:
+//   guard()    rejects with the hook's OWN error (not ApprovalDeniedError); the tool never runs.
+//   guardAll() never throws; every gated call still pending in the batch is reported "denied"
+//              with reason "approval failed: <hook error>"; ungated reads still run.
+const auditDown = () => {
+  throw new Error("audit log unreachable");
+};
+const auditDownAsync = async () => {
+  throw new Error("audit log unreachable (async)");
+};
+
+for (const [kind, hook] of [
+  ["sync throw", auditDown],
+  ["async rejection", auditDownAsync],
+] as const) {
+  for (const verdict of [true, false]) {
+    test(`audit failure (${kind}, approver says ${verdict}): guard() rejects with the hook error and never runs the tool`, async () => {
+      let ran = 0;
+      const gate = createGate({ approver: async () => ({ approved: verdict }), onDecision: hook });
+      await assert.rejects(gate.guard(call("delete_x"), () => ran++), (err: unknown) => {
+        assert.ok(!(err instanceof ApprovalDeniedError), "the hook error is not wrapped");
+        assert.match((err as Error).message, /audit log unreachable/);
+        return true;
+      });
+      assert.equal(ran, 0);
+    });
+  }
+
+  test(`audit failure (${kind}): guardAll() denies gated calls, still runs reads, never throws`, async () => {
+    const ran: string[] = [];
+    const gate = createGate({ approver: allow, onDecision: hook });
+    const results = await gate.guardAll([
+      { call: call("list_incidents"), execute: () => ran.push("list") },
+      { call: call("delete_x"), execute: () => ran.push("delete") },
+    ]);
+    assert.deepEqual(results.map((r) => r.status), ["fulfilled", "denied"]);
+    assert.match(
+      results[1]?.status === "denied" ? results[1].error.message : "",
+      /approval failed: audit log unreachable/,
+    );
+    assert.deepEqual(ran, ["list"]);
+  });
+}
+
+test("audit hook: an async onDecision is awaited before the tool runs", async () => {
+  const order: string[] = [];
+  const gate = createGate({
+    approver: allow,
+    onDecision: async () => {
+      await sleep(5);
+      order.push("audit written");
+    },
+  });
+  await gate.guard(call("delete_x"), () => order.push("tool ran"));
+  assert.deepEqual(order, ["audit written", "tool ran"]);
+});
+
+for (const withBatchApprover of [false, true]) {
+  test(`audit failure mid-batch (${withBatchApprover ? "batchApprover" : "single approver"}): every gated call is denied, even one the hook already logged as approved`, async () => {
+    // Pins current behavior: fail-closed for the whole batch, but the audit log
+    // may already hold an "approved" line for a call that was then denied.
+    const audited: string[] = [];
+    const ran: string[] = [];
+    let asked = 0;
+    let n = 0;
+    const gate = createGate({
+      approver: async () => (asked++, { approved: true }),
+      ...(withBatchApprover
+        ? {
+            batchApprover: async (rs: readonly { call: ToolCall }[]) =>
+              (asked += rs.length, Object.fromEntries(rs.map((r) => [r.call.id, { approved: true }]))),
+          }
+        : {}),
+      onDecision: (req, d) => {
+        if (++n === 2) throw new Error("audit log unreachable");
+        audited.push(`${req.call.id}:${d.approved}`);
+      },
+    });
+    const results = await gate.guardAll(
+      ["a", "b", "c"].map((id) => ({ call: call("delete_x", {}, id), execute: () => ran.push(id) })),
+    );
+    assert.deepEqual(results.map((r) => r.status), ["denied", "denied", "denied"]);
+    assert.deepEqual(ran, []);
+    assert.deepEqual(audited, ["a:true"]);
+    // Without a batch approver the calls are asked one by one, so "c" is never asked.
+    assert.equal(asked, withBatchApprover ? 3 : 2);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Malformed tool arguments
@@ -343,4 +447,56 @@ test("args: the approver gets a frozen view, the tool gets its own mutable copy"
   });
   assert.equal(frozen, true);
   assert.deepEqual(out, ["a", "b"]);
+});
+
+// ---------------------------------------------------------------------------
+// KNOWN LIMITATION — negative controls. These tests assert that harmful calls
+// DO get through. Classification is by tool name only; args are never read.
+// If one of these starts failing, the limitation changed: update the README
+// ("Limitations") and the eval (row 15) instead of flipping the assertion.
+// ---------------------------------------------------------------------------
+
+const HARMFUL_SQL = ["DROP TABLE users", "DELETE FROM users"]; // the second has no WHERE
+
+for (const sql of HARMFUL_SQL) {
+  test(`KNOWN LIMITATION: query_db pinned as read runs "${sql}" without asking`, async () => {
+    let asked = 0;
+    const ran: string[] = [];
+    const gate = createGate({
+      classify: staticClassifier({ query_db: { sensitivity: "read" } }),
+      approver: async () => (asked++, { approved: false }),
+    });
+    await gate.guard(call("query_db", { sql }), (a) => ran.push(String(a.sql)));
+    assert.equal(asked, 0);
+    assert.deepEqual(ran, [sql]);
+  });
+}
+
+test("KNOWN LIMITATION: a generic tool whose name starts with a read verb is a read whatever its args", () => {
+  const c = defaultClassifier(call("read_db", { sql: "DROP TABLE users" }));
+  assert.equal(c.sensitivity, "read");
+  assert.equal(defaultGate(c), false);
+});
+
+test("query_db is gated by the default heuristic, so the approver sees the SQL", async () => {
+  // `query` is not a read verb: unpinned, the call is held and the human decides on the args.
+  let shown: unknown;
+  const gate = createGate({ approver: async (r) => ((shown = r.call.args.sql), { approved: false }) });
+  await assert.rejects(gate.guard(call("query_db", { sql: "DELETE FROM users" }), () => 1), ApprovalDeniedError);
+  assert.equal(shown, "DELETE FROM users");
+});
+
+test("extension point: a user-written classifier can look at args (not shipped by the library)", async () => {
+  // `classify` receives the whole call, args included. This keyword check is an
+  // illustration, not a SQL parser: comments, CTEs or a stored procedure evade it.
+  const byName = staticClassifier({ query_db: { sensitivity: "read" } });
+  const classify = (c: ToolCall) =>
+    c.name === "query_db" && /\b(drop|delete|truncate|update|alter|insert)\b/i.test(String(c.args.sql))
+      ? { sensitivity: "write" as const, destructive: true }
+      : byName(c);
+  let asked = 0;
+  const gate = createGate({ classify, approver: async () => (asked++, { approved: false }) });
+  await assert.rejects(gate.guard(call("query_db", { sql: "DELETE FROM users" }), () => 1), ApprovalDeniedError);
+  assert.equal(await gate.guard(call("query_db", { sql: "SELECT 1" }), () => "rows"), "rows");
+  assert.equal(asked, 1);
 });
