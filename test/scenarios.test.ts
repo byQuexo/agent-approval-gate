@@ -433,3 +433,55 @@ test("args: the approver gets a frozen view, the tool gets its own mutable copy"
   assert.equal(frozen, true);
   assert.deepEqual(out, ["a", "b"]);
 });
+
+// ---------------------------------------------------------------------------
+// KNOWN LIMITATION — negative controls. These tests assert that harmful calls
+// DO get through. Classification is by tool name only; args are never read.
+// If one of these starts failing, the limitation changed: update the README
+// ("Limitations") and the eval (row 15) instead of flipping the assertion.
+// ---------------------------------------------------------------------------
+
+const HARMFUL_SQL = ["DROP TABLE users", "DELETE FROM users"]; // the second has no WHERE
+
+for (const sql of HARMFUL_SQL) {
+  test(`KNOWN LIMITATION: query_db pinned as read runs "${sql}" without asking`, async () => {
+    let asked = 0;
+    const ran: string[] = [];
+    const gate = createGate({
+      classify: staticClassifier({ query_db: { sensitivity: "read" } }),
+      approver: async () => (asked++, { approved: false }),
+    });
+    await gate.guard(call("query_db", { sql }), (a) => ran.push(String(a.sql)));
+    assert.equal(asked, 0);
+    assert.deepEqual(ran, [sql]);
+  });
+}
+
+test("KNOWN LIMITATION: a generic tool whose name starts with a read verb is a read whatever its args", () => {
+  const c = defaultClassifier(call("read_db", { sql: "DROP TABLE users" }));
+  assert.equal(c.sensitivity, "read");
+  assert.equal(defaultGate(c), false);
+});
+
+test("query_db is gated by the default heuristic, so the approver sees the SQL", async () => {
+  // `query` is not a read verb: unpinned, the call is held and the human decides on the args.
+  let shown: unknown;
+  const gate = createGate({ approver: async (r) => ((shown = r.call.args.sql), { approved: false }) });
+  await assert.rejects(gate.guard(call("query_db", { sql: "DELETE FROM users" }), () => 1), ApprovalDeniedError);
+  assert.equal(shown, "DELETE FROM users");
+});
+
+test("extension point: a user-written classifier can look at args (not shipped by the library)", async () => {
+  // `classify` receives the whole call, args included. This keyword check is an
+  // illustration, not a SQL parser: comments, CTEs or a stored procedure evade it.
+  const byName = staticClassifier({ query_db: { sensitivity: "read" } });
+  const classify = (c: ToolCall) =>
+    c.name === "query_db" && /\b(drop|delete|truncate|update|alter|insert)\b/i.test(String(c.args.sql))
+      ? { sensitivity: "write" as const, destructive: true }
+      : byName(c);
+  let asked = 0;
+  const gate = createGate({ classify, approver: async () => (asked++, { approved: false }) });
+  await assert.rejects(gate.guard(call("query_db", { sql: "DELETE FROM users" }), () => 1), ApprovalDeniedError);
+  assert.equal(await gate.guard(call("query_db", { sql: "SELECT 1" }), () => "rows"), "rows");
+  assert.equal(asked, 1);
+});
