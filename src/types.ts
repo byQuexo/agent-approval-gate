@@ -125,7 +125,18 @@ export interface GateOptions {
    * prompt injection can write it too: show the raw args next to it.
    */
   readonly describe?: Describe;
-  /** Called after every decision — wire this to your audit log. */
+  /**
+   * Called after every approver decision (including timeouts), before the
+   * tool runs — wire this to your audit log. A returned promise is awaited
+   * (an `async` function is accepted by this signature).
+   *
+   * If the hook throws or its promise rejects, the call does not run:
+   * `guard()` rejects with the hook's own error (not an ApprovalDeniedError);
+   * `guardAll()` denies every gated call still pending in that batch. A hook
+   * that never settles holds the call; `approvalTimeoutMs` does not cover it.
+   * Not called for ungated calls, for duplicate-id denials in a batch, or when
+   * the approver itself throws.
+   */
   readonly onDecision?: (
     request: ApprovalRequest,
     decision: ApprovalDecision,

@@ -278,6 +278,95 @@ test("audit failure: a throwing onDecision blocks the call", async () => {
   assert.equal(ran, 0);
 });
 
+// The two entry points fail closed differently when the onDecision hook fails:
+//   guard()    rejects with the hook's OWN error (not ApprovalDeniedError); the tool never runs.
+//   guardAll() never throws; every gated call still pending in the batch is reported "denied"
+//              with reason "approval failed: <hook error>"; ungated reads still run.
+const auditDown = () => {
+  throw new Error("audit log unreachable");
+};
+const auditDownAsync = async () => {
+  throw new Error("audit log unreachable (async)");
+};
+
+for (const [kind, hook] of [
+  ["sync throw", auditDown],
+  ["async rejection", auditDownAsync],
+] as const) {
+  for (const verdict of [true, false]) {
+    test(`audit failure (${kind}, approver says ${verdict}): guard() rejects with the hook error and never runs the tool`, async () => {
+      let ran = 0;
+      const gate = createGate({ approver: async () => ({ approved: verdict }), onDecision: hook });
+      await assert.rejects(gate.guard(call("delete_x"), () => ran++), (err: unknown) => {
+        assert.ok(!(err instanceof ApprovalDeniedError), "the hook error is not wrapped");
+        assert.match((err as Error).message, /audit log unreachable/);
+        return true;
+      });
+      assert.equal(ran, 0);
+    });
+  }
+
+  test(`audit failure (${kind}): guardAll() denies gated calls, still runs reads, never throws`, async () => {
+    const ran: string[] = [];
+    const gate = createGate({ approver: allow, onDecision: hook });
+    const results = await gate.guardAll([
+      { call: call("list_incidents"), execute: () => ran.push("list") },
+      { call: call("delete_x"), execute: () => ran.push("delete") },
+    ]);
+    assert.deepEqual(results.map((r) => r.status), ["fulfilled", "denied"]);
+    assert.match(
+      results[1]?.status === "denied" ? results[1].error.message : "",
+      /approval failed: audit log unreachable/,
+    );
+    assert.deepEqual(ran, ["list"]);
+  });
+}
+
+test("audit hook: an async onDecision is awaited before the tool runs", async () => {
+  const order: string[] = [];
+  const gate = createGate({
+    approver: allow,
+    onDecision: async () => {
+      await sleep(5);
+      order.push("audit written");
+    },
+  });
+  await gate.guard(call("delete_x"), () => order.push("tool ran"));
+  assert.deepEqual(order, ["audit written", "tool ran"]);
+});
+
+for (const withBatchApprover of [false, true]) {
+  test(`audit failure mid-batch (${withBatchApprover ? "batchApprover" : "single approver"}): every gated call is denied, even one the hook already logged as approved`, async () => {
+    // Pins current behavior: fail-closed for the whole batch, but the audit log
+    // may already hold an "approved" line for a call that was then denied.
+    const audited: string[] = [];
+    const ran: string[] = [];
+    let asked = 0;
+    let n = 0;
+    const gate = createGate({
+      approver: async () => (asked++, { approved: true }),
+      ...(withBatchApprover
+        ? {
+            batchApprover: async (rs: readonly { call: ToolCall }[]) =>
+              (asked += rs.length, Object.fromEntries(rs.map((r) => [r.call.id, { approved: true }]))),
+          }
+        : {}),
+      onDecision: (req, d) => {
+        if (++n === 2) throw new Error("audit log unreachable");
+        audited.push(`${req.call.id}:${d.approved}`);
+      },
+    });
+    const results = await gate.guardAll(
+      ["a", "b", "c"].map((id) => ({ call: call("delete_x", {}, id), execute: () => ran.push(id) })),
+    );
+    assert.deepEqual(results.map((r) => r.status), ["denied", "denied", "denied"]);
+    assert.deepEqual(ran, []);
+    assert.deepEqual(audited, ["a:true"]);
+    // Without a batch approver the calls are asked one by one, so "c" is never asked.
+    assert.equal(asked, withBatchApprover ? 3 : 2);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Malformed tool arguments
 // ---------------------------------------------------------------------------
