@@ -264,6 +264,21 @@ test("approver outage: a throwing single approver in guardAll denies instead of 
   assert.equal(result?.status, "denied");
 });
 
+test("approver outage: a throwing approver makes guard() reject with that error, tool not run", async () => {
+  let ran = 0;
+  const gate = createGate({
+    approver: async () => {
+      throw new Error("pager down");
+    },
+  });
+  await assert.rejects(gate.guard(call("delete_service"), () => ran++), (err: unknown) => {
+    assert.ok(!(err instanceof ApprovalDeniedError));
+    assert.match((err as Error).message, /pager down/);
+    return true;
+  });
+  assert.equal(ran, 0);
+});
+
 test("audit failure: a throwing onDecision blocks the call", async () => {
   let ran = 0;
   const gate = createGate({
