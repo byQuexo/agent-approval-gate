@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="236" viewBox="0 0 1280 236" role="img" aria-label="Harmful calls run in 15 replayed agent turns: 11 in v0.1.0, 1 now. Approvals reused: 0. Runtime dependencies of the core: 0; 74 tests across TypeScript and Rust.">
-  <title>11 → 1 harmful calls · 0 reused approvals · 0 runtime dependencies</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="236" viewBox="0 0 1280 236" role="img" aria-label="Harmful calls run in 15 scripted agent turns: 11 in v0.1.0, 1 now; the remaining one is a documented known limitation. Approvals stored between calls: 0, by design and pinned by a test. Runtime dependencies of the core: 0; 91 tests across TypeScript and Rust.">
+  <title>11 → 1 harmful calls · 0 stored approvals · 0 runtime dependencies</title>
   <defs>
     <linearGradient id="c0" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ea580c"/><stop offset="1" stop-color="#ec4899"/></linearGradient>
     <linearGradient id="c1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient>
@@ -11,21 +11,21 @@
     <path d="M260 0h132a18 18 0 0 1 18 18v120z" fill="url(#dots)"/>
     <text x="32" y="112" font-size="76" font-weight="800">11 → 1</text>
     <text x="32" y="152" font-size="22" font-weight="700">harmful calls run</text>
-    <text x="32" y="184" font-size="16" opacity="0.92">15 replayed agent turns (injection, bypass,</text>
-    <text x="32" y="206" font-size="16" opacity="0.92">outages), v0.1.0 vs. now; no LLM needed</text>
+    <text x="32" y="184" font-size="16" opacity="0.92">15 scripted agent turns, v0.1.0 vs. now;</text>
+    <text x="32" y="206" font-size="16" opacity="0.92">the 1 left is a known limitation (row 15)</text>
 
     <rect x="435" y="0" width="410" height="236" rx="18" fill="url(#c1)"/>
     <path d="M695 0h132a18 18 0 0 1 18 18v120z" fill="url(#dots)"/>
     <text x="467" y="112" font-size="76" font-weight="800">0</text>
-    <text x="467" y="152" font-size="22" font-weight="700">approvals ever reused</text>
-    <text x="467" y="184" font-size="16" opacity="0.92">one yes = one call; no session grants,</text>
-    <text x="467" y="206" font-size="16" opacity="0.92">no "remember my choice" (enforced by a test)</text>
+    <text x="467" y="152" font-size="22" font-weight="700">approvals stored</text>
+    <text x="467" y="184" font-size="16" opacity="0.92">one yes = one call; the gate keeps no</text>
+    <text x="467" y="206" font-size="16" opacity="0.92">grant between calls (pinned by a test)</text>
 
     <rect x="870" y="0" width="410" height="236" rx="18" fill="url(#c2)"/>
     <path d="M1130 0h132a18 18 0 0 1 18 18v120z" fill="url(#dots)"/>
     <text x="902" y="112" font-size="76" font-weight="800">0 deps</text>
     <text x="902" y="152" font-size="22" font-weight="700">in the core</text>
-    <text x="902" y="184" font-size="16" opacity="0.92">74 tests across TypeScript and Rust;</text>
+    <text x="902" y="184" font-size="16" opacity="0.92">91 tests across TypeScript and Rust;</text>
     <text x="902" y="206" font-size="16" opacity="0.92">same YAML policies in both languages</text>
   </g>
 </svg>
